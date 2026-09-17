@@ -1,17 +1,20 @@
 /**
  * harness-bridge core — connect a coding harness to an inference provider.
  *
- * The only job: given a provider (base URL + key), discover its models, and launch a
- * harness pointed at one of those models. Nothing the user owns is edited: the endpoint,
- * key and model travel in the launch environment, so the harness keeps its own config and
- * only the *selected model* of this tool changes.
+ * Nothing the user owns is edited: the endpoint, key and model travel in the launch
+ * environment, so a harness keeps its own config and only this tool's selection changes.
  */
-import { mkdirSync, readFileSync, writeFileSync, chmodSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { join, dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
-export type Dialect = "chat" | "messages" | "responses";
+// harnesses.ts and terminals.ts hold the tables; this module is the entry point
+export * from "./harnesses.ts";
+export * from "./terminals.ts";
+import { HARNESSES, INSTALLERS, THINKING_TOKENS, harnessById, harnessInstalled, installHarness, writePrivate } from "./harnesses.ts";
+import type { Dialect, ReasoningLevel } from "./harnesses.ts";
+import { TERMINALS, resolveTerminal, terminalInstalled } from "./terminals.ts";
 
 export interface Provider {
   id: string;
@@ -23,11 +26,19 @@ export interface Provider {
   api: Dialect;
   /** every dialect this endpoint serves (a gateway may translate all three) */
   apis?: Dialect[];
+  /** how hard harnesses should think when launched on this provider; default auto */
+  reasoning?: ReasoningLevel;
 }
 
 export interface Config {
   providers: Provider[];
   selected: { provider: string | null; model: string | null };
+  /** which terminal sessions open in: a terminal id, "auto", or "custom" */
+  terminal?: string;
+  /** the argv template used when terminal is "custom"; {command} {dir} {name} are substituted */
+  terminalCommand?: string;
+  /** where sessions open when no directory is given for the run */
+  cwd?: string;
 }
 
 export interface ModelInfo {
@@ -43,10 +54,41 @@ export const AGENT_DIR = join(CONFIG_DIR, "agents");
 
 const empty = (): Config => ({ providers: [], selected: { provider: null, model: null } });
 
+/** Record where sessions open. An empty path clears it and falls back to the shell's directory. */
+export function setCwd(dir: string): Config {
+  const cfg = loadConfig();
+  if (dir) {
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) throw new Error(`not a directory: ${dir}`);
+    cfg.cwd = resolve(dir);
+  } else {
+    delete cfg.cwd;
+  }
+  saveConfig(cfg);
+  return cfg;
+}
+
+/** The directory a session should start in: what the caller named, else the recorded one. */
+export const sessionDir = (given?: string): string => given || loadConfig().cwd || process.cwd();
+
+/** Record which terminal sessions open in. Pass "auto" to follow the terminal in use. */
+export function setTerminal(id: string, template?: string): Config {
+  const cfg = loadConfig();
+  cfg.terminal = id;
+  if (template !== undefined) cfg.terminalCommand = template;
+  saveConfig(cfg);
+  return cfg;
+}
+
 export function loadConfig(): Config {
   try {
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-    return { providers: raw.providers ?? [], selected: raw.selected ?? { provider: null, model: null } };
+    return {
+      providers: raw.providers ?? [],
+      selected: raw.selected ?? { provider: null, model: null },
+      terminal: raw.terminal,
+      terminalCommand: raw.terminalCommand,
+      cwd: raw.cwd,
+    };
   } catch {
     return empty();
   }
@@ -56,13 +98,6 @@ export function saveConfig(cfg: Config): void {
   mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
   chmodSync(CONFIG_PATH, 0o600);
-}
-
-/** write a file the harness reads, never world-readable */
-export function writePrivate(path: string, data: string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, data, { mode: 0o600 });
-  chmodSync(path, 0o600);
 }
 
 export const apiBases = (base: string) => {
@@ -76,7 +111,7 @@ export const apiBases = (base: string) => {
 export function addProvider(p: Partial<Provider> & { id?: string; name?: string; apiUrl: string; apiKey: string }): Provider {
   const cfg = loadConfig();
   const id = (p.id || p.name || "provider").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  const prov: Provider = { id, name: p.name || id, apiUrl: p.apiUrl, apiKey: p.apiKey, api: p.api ?? "chat", apis: p.apis };
+  const prov: Provider = { id, name: p.name || id, apiUrl: p.apiUrl, apiKey: p.apiKey, api: p.api ?? "chat", apis: p.apis, reasoning: p.reasoning };
   const i = cfg.providers.findIndex((x) => x.id === id);
   if (i >= 0) cfg.providers[i] = prov;
   else cfg.providers.push(prov);
@@ -147,105 +182,6 @@ export async function listModels(providerId?: string): Promise<ModelInfo[]> {
   return out;
 }
 
-// ---------------------------------------------------------------- harnesses
-
-export interface Harness {
-  id: string;
-  label: string;
-  dialect: Dialect;
-  bin: string;
-}
-
-/** Every harness is launched with an environment the model can be reached through. */
-export const HARNESSES: Harness[] = [
-  { id: "claude", label: "Claude Code", dialect: "messages", bin: "claude" },
-  { id: "codex", label: "Codex", dialect: "responses", bin: "codex" },
-  { id: "opencode", label: "OpenCode", dialect: "chat", bin: "opencode" },
-  { id: "pi", label: "Pi", dialect: "chat", bin: "pi" },
-  { id: "omp", label: "OMP", dialect: "chat", bin: "omp" },
-  { id: "crush", label: "Crush", dialect: "chat", bin: "crush" },
-  { id: "copilot", label: "Copilot CLI", dialect: "chat", bin: "copilot" },
-  { id: "grok", label: "Grok CLI", dialect: "chat", bin: "grok" },
-  { id: "aider", label: "Aider", dialect: "chat", bin: "aider" },
-  { id: "hermes", label: "Hermes", dialect: "chat", bin: "hermes" },
-];
-
-export const harnessById = (id: string) => HARNESSES.find((h) => h.id === id);
-
-const which = (bin: string): string | null => {
-  // a harness installed a moment ago lands in a global bin dir that may not be on this
-  // process's PATH yet, so the well-known ones are searched too
-  const dirs = [
-    ...(process.env.PATH ?? "").split(":"),
-    join(homedir(), ".bun", "bin"),
-    join(homedir(), ".local", "bin"),
-    "/usr/local/bin",
-    "/opt/homebrew/bin",
-  ];
-  for (const dir of dirs) {
-    if (!dir) continue;
-    const p = join(dir, bin);
-    try {
-      if (statSync(p).isFile()) return p;
-    } catch {}
-  }
-  return null;
-};
-
-export const harnessInstalled = (h: Harness): string | null => which(h.bin);
-
-/** which harnesses can speak to a provider serving these dialects */
-export const compatible = (dialects: Dialect[]) => HARNESSES.filter((h) => dialects.includes(h.dialect));
-
-// ---------------------------------------------------------------- installing
-
-export interface Installer {
-  /** npm and pipx packages can be installed unattended; manual means the vendor ships a binary */
-  manager: "npm" | "pip" | "manual";
-  pkg?: string;
-  hint: string;
-}
-
-/**
- * Where each harness comes from. Only vendors' published packages are listed; harnesses that
- * ship as downloaded binaries say so instead of guessing a URL.
- */
-export const INSTALLERS: Record<string, Installer> = {
-  claude: { manager: "npm", pkg: "@anthropic-ai/claude-code", hint: "npm install -g @anthropic-ai/claude-code" },
-  codex: { manager: "npm", pkg: "@openai/codex", hint: "npm install -g @openai/codex" },
-  opencode: { manager: "npm", pkg: "opencode-ai", hint: "npm install -g opencode-ai" },
-  pi: { manager: "npm", pkg: "@oh-my-pi/pi-coding-agent", hint: "npm install -g @oh-my-pi/pi-coding-agent" },
-  crush: { manager: "npm", pkg: "@charmland/crush", hint: "npm install -g @charmland/crush" },
-  copilot: { manager: "npm", pkg: "@github/copilot", hint: "npm install -g @github/copilot" },
-  aider: { manager: "pip", pkg: "aider-chat", hint: "pipx install aider-chat — aider pins numpy==1.24.3, which will not build on Python 3.13; add --python 3.11" },
-  omp: { manager: "manual", hint: "OMP ships a native binary — install it from https://oh-my-pi.dev" },
-  grok: { manager: "manual", hint: "the Grok CLI ships a downloaded binary — install it from xAI" },
-  hermes: { manager: "manual", hint: "install Hermes from its own repository" },
-};
-
-/** Install a harness with the vendor's package, then report the binary that appeared. */
-export function installHarness(id: string): { path: string; command: string } {
-  const h = harnessById(id);
-  if (!h) throw new Error(`unknown harness: ${id}`);
-  const already = harnessInstalled(h);
-  if (already) return { path: already, command: "" };
-  const inst = INSTALLERS[id];
-  if (!inst || inst.manager === "manual") throw new Error(`${h.label} cannot be installed automatically — ${inst?.hint ?? "no installer known"}`);
-  const argv =
-    inst.manager === "pip"
-      ? ["pipx", "install", inst.pkg!]
-      : which("bun")
-        ? ["bun", "add", "-g", inst.pkg!]
-        : ["npm", "install", "-g", inst.pkg!];
-  const r = spawnSync(argv[0], argv.slice(1), { stdio: "inherit" });
-  if (r.error) throw new Error(`could not run ${argv.join(" ")}: ${r.error.message}`);
-  if (r.status !== 0)
-    throw new Error(`${inst.manager === "pip" ? "pipx" : "the package manager"} failed (${argv.join(" ")} exited ${r.status}) — nothing was installed`);
-  const after = harnessInstalled(h);
-  if (!after) throw new Error(`\`${argv.join(" ")}\` reported success but ${h.label} is not on PATH — a new shell may be needed`);
-  return { path: after, command: argv.join(" ") };
-}
-
 /** the dialects an endpoint accepts; a provider without an explicit list serves its primary one */
 export const dialectsOf = (p: Provider): Dialect[] => (p.apis?.length ? p.apis : [p.api]);
 
@@ -266,6 +202,8 @@ export interface LaunchTarget {
   model: string;
   context?: number;
   vision?: boolean;
+  /** how hard to think; `auto` leaves the harness alone */
+  reasoning?: ReasoningLevel;
 }
 
 /** Build the argv + environment that points one harness at one model. */
@@ -276,6 +214,8 @@ export function buildLaunch(harnessId: string, t: LaunchTarget, cwd = process.cw
   if (!bin) throw new Error(`${h.label} is not installed (no \`${h.bin}\` on PATH)`);
   const { root, v1 } = apiBases(t.endpoint);
   const ctx = t.context ?? 131072;
+  const think = t.reasoning ?? "auto";
+  const wantsThinking = think === "low" || think === "medium" || think === "high";
   const files: LaunchPlan["files"] = [];
   let env: Record<string, string> = {};
   let args: string[] = [];
@@ -293,6 +233,8 @@ export function buildLaunch(harnessId: string, t: LaunchTarget, cwd = process.cw
         // of letting it assume 200k and enable auto-compact early.
         CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(ctx),
         CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: "1",
+        // only sent when asked for: an unset MAX_THINKING_TOKENS keeps Claude's own default
+        ...(think === "auto" ? {} : { MAX_THINKING_TOKENS: String(THINKING_TOKENS[think]) }),
       };
       args = ["--model", t.model];
       break;
@@ -306,6 +248,8 @@ export function buildLaunch(harnessId: string, t: LaunchTarget, cwd = process.cw
         "-c", "model_provider=local",
         "-c", `model=${t.model}`,
         "-c", `model_context_window=${ctx}`,
+        // codex calls its lowest setting "minimal", not "off"
+        ...(think === "auto" ? [] : ["-c", `model_reasoning_effort=${think === "off" ? "minimal" : think}`]),
       ];
       break;
     case "opencode": {
@@ -339,7 +283,9 @@ export function buildLaunch(harnessId: string, t: LaunchTarget, cwd = process.cw
               contextWindow: ctx,
               input: t.vision ? ["text", "image"] : ["text"],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              ...(h.id === "omp" ? { compat: { supportsReasoningParams: false } } : {}),
+              // the flag suppresses reasoning params for engines that choke on them; asking
+              // for a level explicitly is what turns them back on
+              ...(h.id === "omp" ? { compat: { supportsReasoningParams: wantsThinking } } : {}),
             }],
           },
         },
@@ -406,34 +352,53 @@ export function buildLaunch(harnessId: string, t: LaunchTarget, cwd = process.cw
   return { harness: h, bin, env, args, files, cwd };
 }
 
-// ---------------------------------------------------------------- run
+// ---------------------------------------------------------------- sessions
 
-const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+/** Quote only when a token needs it, so the command stays readable in a terminal's history. */
+const bare = /^[A-Za-z0-9_@%+=:,./-]+$/;
+const q = (v: string) => (bare.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`);
 
-/** Render a plan as a shell script that opens the harness in a terminal. */
-export function planToScript(plan: LaunchPlan, { keepOpen = false } = {}): string {
-  const env = Object.entries(plan.env).map(([k, v]) => `export ${k}=${shellQuote(v)}`).join("\n");
-  const argv = [plan.bin, ...plan.args].map(shellQuote).join(" ");
-  const tail = keepOpen ? `\nprintf '\\n[harness-bridge] %s exited. Press enter to close.\\n' "$?"\nread -r _` : "";
-  return `#!/usr/bin/env bash\ncd ${shellQuote(plan.cwd)} || exit 1\n${env}\nexec ${argv}${tail}\n`;
+let cachedCli: string | undefined;
+
+/** The installed CLI, resolved absolutely: a bundle or a menu bar app starts with a bare PATH. */
+export function cliPath(): string {
+  if (cachedCli) return cachedCli;
+  const home = homedir();
+  const candidates = [
+    process.env.HARNESS_BRIDGE_BIN,
+    join(home, ".bun", "bin", "harness-bridge"),
+    join(home, ".local", "bin", "harness-bridge"),
+    "/opt/homebrew/bin/harness-bridge",
+    "/usr/local/bin/harness-bridge",
+  ].filter((c): c is string => !!c);
+  cachedCli = candidates.find((c) => existsSync(c)) ?? "harness-bridge";
+  return cachedCli;
 }
+
+/**
+ * The command a session runs. It re-enters this CLI, which builds the launch environment at run
+ * time from the 0600 config — so nothing secret is ever written to a file, and a session always
+ * reflects the current selection rather than one frozen when the command was composed.
+ */
+export const sessionCommand = (harnessId: string, dir: string, cli = cliPath()): string =>
+  `${q(cli)} run --harness ${q(harnessId)} --exec --dir ${q(dir)}`;
 
 export interface RunOptions {
   harnessId: string;
   providerId?: string;
   model?: string;
   cwd?: string;
-  /** print the resolved command instead of launching a terminal */
-  foreground?: boolean;
   /** extra flags appended to the harness argv */
   extraArgs?: string[];
   /** the model's real context window, when known */
   context?: number;
   /** whether the model accepts images */
   vision?: boolean;
+  /** override the provider's reasoning setting for this launch */
+  reasoning?: ReasoningLevel;
 }
 
-export async function run(opts: RunOptions): Promise<{ plan: LaunchPlan; script: string; launched: boolean }> {
+export async function run(opts: RunOptions): Promise<{ plan: LaunchPlan }> {
   const cfg = loadConfig();
   const provider = resolveProvider(opts.providerId);
   const model = opts.model || (cfg.selected.provider === provider.id ? cfg.selected.model : null);
@@ -445,15 +410,10 @@ export async function run(opts: RunOptions): Promise<{ plan: LaunchPlan; script:
       `${wanted.label} speaks ${wanted.dialect}, which ${provider.name} does not serve (${dialectsOf(provider).join(", ")})`,
     );
   if (opts.model && opts.model !== cfg.selected.model) selectModel(opts.model, provider.id);
-  const target: LaunchTarget = { endpoint: provider.apiUrl, key: provider.apiKey, model, context: opts.context, vision: opts.vision };
+  const target: LaunchTarget = { endpoint: provider.apiUrl, key: provider.apiKey, model, context: opts.context, vision: opts.vision, reasoning: opts.reasoning ?? provider.reasoning };
   const plan = buildLaunch(opts.harnessId, target, opts.cwd);
   if (opts.extraArgs?.length) plan.args.push(...opts.extraArgs);
-  const script = planToScript(plan, { keepOpen: !opts.foreground });
-  return { plan, script, launched: false };
-}
-
-export function dialectNote(provider: Provider): Dialect {
-  return provider.api;
+  return { plan };
 }
 
 /**
@@ -461,19 +421,16 @@ export function dialectNote(provider: Provider): Dialect {
  * first installed emulator that can run a script. Shared by the CLI and the web UI so a
  * launch behaves identically either way.
  */
-export function openScriptInTerminal(script: string, label: string): { opened: boolean; path: string } {
-  const dir = join(AGENT_DIR, "run");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const path = join(dir, `${label.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}.sh`);
-  writePrivate(path, script);
-  chmodSync(path, 0o700);
-  if (process.platform === "darwin") {
-    return { opened: spawnSync("open", ["-a", "Terminal", path], { stdio: "ignore" }).status === 0, path };
-  }
-  for (const term of ["kgx", "gnome-terminal", "konsole", "kitty", "alacritty", "x-terminal-emulator", "xterm"]) {
-    if (spawnSync("bash", ["-lc", `command -v ${term}`], { stdio: "ignore" }).status !== 0) continue;
-    const r = spawnSync(term, ["-e", "bash", path], { detached: true, stdio: "ignore" });
-    if (!r.error) return { opened: true, path };
-  }
-  return { opened: false, path };
+export function openSession(
+  harnessId: string,
+  dir: string,
+  label: string,
+): { opened: boolean; terminal: string; command: string; prepared: string[] } {
+  const cfg = loadConfig();
+  const term = resolveTerminal(cfg.terminal, cfg.terminalCommand);
+  const session = { command: sessionCommand(harnessId, dir), dir, name: `harness-bridge ${label}` };
+  const prepared = term.prepare?.(session) ?? [];
+  const [cmd, ...args] = term.command(session);
+  const r = spawnSync(cmd, args, { stdio: "ignore", detached: true });
+  return { opened: !r.error && r.status === 0, terminal: term.id, command: session.command, prepared };
 }

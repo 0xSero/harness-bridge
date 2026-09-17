@@ -6,14 +6,17 @@ want on the model you picked.
 
 Four independent packages, one core:
 
-| Package | What it is | Lines |
+| Package | What it is | Largest file |
 |---|---|---|
-| `packages/core` | the whole idea: providers, model discovery, harness launch plans | ~460 |
-| `packages/cli` | terminal wrapper — the `harness-bridge` / `hbr` executables | ~290 |
-| `packages/tray` | macOS menu bar app (Swift/AppKit), shells out to the CLI | ~250 |
-| `packages/web` | browser UI on `127.0.0.1`, same core | ~250 |
+| `packages/core` | providers, models, launch plans, sessions | 436 |
+| `packages/cli` | terminal wrapper — the `harness-bridge` / `hbr` executables | 287 |
+| `packages/tray` | macOS menu bar app (SwiftUI + AppKit) | 240 |
+| `packages/web` | browser UI on `127.0.0.1` | 246 |
 
-The core is a library. Everything else is a thin shell over it.
+The core is a library. Everything else is a thin shell over it. Each package is split into
+small modules rather than one long file: `harnesses.ts` (what each agent is), `terminals.ts`
+(how a session is opened), `core.ts` (providers and launches), `snapshot.ts` (the read model
+every UI renders).
 
 ## Install
 
@@ -66,7 +69,7 @@ packages. For those the tool prints the vendor's install hint instead of inventi
 | `--exec` | run the harness in this terminal (no new window) |
 | `--harness <id>` | pick the harness without a positional argument |
 | `--provider <id>` | launch against a provider other than the selected one |
-| `--dir <path>` | working directory for the harness |
+| `--dir <path>` | working directory for the harness (overrides `dir`) |
 | `--no-install` | fail instead of installing a missing harness |
 | `-- <flags…>` | append flags to the harness argv (e.g. `-- --yolo`) |
 
@@ -75,6 +78,60 @@ Nothing you own is edited — your `~/.claude.json`, `~/.codex/config.toml` and
 
 Listings are coloured only when stdout is a terminal, so a pipe, a log or the macOS tray
 gets plain text; `NO_COLOR` forces plain output.
+
+## Sessions
+
+A session is a **command**, not a generated script:
+
+```
+harness-bridge run --harness omp --exec --dir /Users/you/project
+```
+
+The terminal is handed exactly that, so what runs is visible in its own history. The command
+re-enters the CLI, which builds the launch environment at run time from the 0600 config — so
+**no key is ever written to a file**, and a session always uses your current selection rather
+than one frozen when a command was composed.
+
+### Which terminal
+
+```bash
+harness-bridge terminal                 # the list, with what is installed
+harness-bridge terminal ghostty         # or: warp, terminal, iterm, kitty, wezterm, …
+harness-bridge terminal custom --command 'open -a WezTerm {dir}'
+```
+
+`auto` (the default) follows `$TERM_PROGRAM`, so launching from Warp opens in Warp, and from
+Ghostty opens in Ghostty. Each entry knows its own mechanism: Ghostty, kitty, Alacritty and
+WezTerm take a command as argv; Terminal.app and iTerm are driven by AppleScript; Warp has no
+`-e` and is opened through a Launch Configuration, which is the only thing this tool writes
+into another app's directory. `{command}`, `{dir}` and `{name}` substitute into a custom
+template.
+
+### Where a session opens
+
+```bash
+harness-bridge dir ~/code         # remembered; used when a run names no directory
+harness-bridge run --dir /tmp omp # one-off
+```
+
+Unset, sessions open wherever the shell started. The tray has a *Choose…* folder picker and
+the web UI a text field for the same setting.
+
+## Reasoning
+
+`auto` by default, which changes nothing — the harness and the engine keep their own settings.
+Choose a level to have the bridge ask for it:
+
+```bash
+harness-bridge providers reasoning high
+```
+
+| Harness | How the level is passed |
+|---|---|
+| Claude Code | `MAX_THINKING_TOKENS` (4096 / 16384 / 32768) |
+| Codex | `-c model_reasoning_effort=<low\|medium\|high>`, and `minimal` for `off` |
+| Pi, OMP | the `supportsReasoningParams` compat flag is lifted, so params are sent |
+| others | no reasoning knob; the setting is ignored |
 
 ## Dialects
 

@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Core: providers, model discovery, harness launch plans.",
   "type": "module",
-  "main": "./src/core.ts",
-  "exports": { ".": "./src/core.ts" },
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
   "bin": { "harness-bridge-core": "./src/core.ts" },
   "license": "MIT"
 }

@@ -8,7 +8,7 @@ app="$here/dist/Harness Bridge.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 
-swiftc -O -o "$app/Contents/MacOS/harness-bridge-tray" "$here/main.swift" -framework AppKit
+swiftc -O -o "$app/Contents/MacOS/harness-bridge-tray" "$here/Bridge.swift" "$here/Settings.swift" "$here/main.swift" -framework AppKit
 
 cat >"$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

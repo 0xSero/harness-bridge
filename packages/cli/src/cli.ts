@@ -4,25 +4,12 @@
  * Configuration, model discovery, selection, and launching a harness on a model.
  */
 import {
-  AGENT_DIR,
-  openScriptInTerminal,
-  CONFIG_PATH,
-  HARNESSES,
-  addProvider,
-  buildLaunch,
-  dialectsOf,
-  harnessById,
-  harnessInstalled,
-  installHarness,
-  listModels,
-  loadConfig,
-  planToScript,
-  removeProvider,
-  resolveProvider,
-  run,
-  saveConfig,
-  selectModel,
+  CONFIG_PATH, HARNESSES, REASONING_LEVELS, TERMINALS,
+  addProvider, buildLaunch, dialectsOf, harnessById, harnessInstalled, installHarness,
+  listModels, loadConfig, openSession, removeProvider, resolveProvider, resolveTerminal,
+  run, saveConfig, selectModel, sessionDir, setCwd, setTerminal, snapshot, terminalInstalled,
 } from "@harness-bridge/core";
+import type { ReasoningLevel } from "@harness-bridge/core";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -46,6 +33,12 @@ function flag(name: string): string | undefined {
 /** boolean flags carry no value */
 const has = (name: string) => argv.includes(`--${name}`);
 
+/** a reasoning level, rejected loudly rather than silently ignored */
+function parseReasoning(raw: string | undefined): ReasoningLevel {
+  if (REASONING_LEVELS.includes(raw as ReasoningLevel)) return raw as ReasoningLevel;
+  return die(`reasoning ${raw ?? ""}: one of ${REASONING_LEVELS.join(", ")}`);
+}
+
 function positional(): string[] {
   const out: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -62,20 +55,17 @@ function positional(): string[] {
 
 const usage = `harness-bridge — launch a coding harness on any OpenAI/Anthropic-compatible endpoint
 
-  providers                          list configured providers
-  providers add --name N --url U --key K [--api chat|messages|responses] [--apis chat,messages]
-  providers rm <id>
-  models [provider]                  list live models from the provider
-  use <model> [provider]             select the model (only selection is persisted)
-  harnesses [provider]               installed harnesses and which the endpoint can drive
-  install <harness>                  install a harness (npm/pipx) so it can be launched
-  run [model] [harness]              open the harness on the selected model
-        --provider <id>  --dir <cwd>
-        --print                      print the command instead of launching
-        --exec                       run the harness in this terminal
-        --no-install                 refuse instead of installing a missing harness
-        -- <extra flags…>            append flags to the harness argv
-  status                             what is configured and selected
+  providers | providers add --name N --url U --key K [--apis chat,messages] [--reasoning <level>]
+  providers rm <id> | providers use <id> | providers reasoning <level> [provider]
+  models [provider]                  list live models
+  use <model> [provider]             select a model (only the selection is persisted)
+  harnesses [provider]               what is installed, and what this endpoint can drive
+  install <harness>                  install a harness so it can be launched
+  run [model] [harness]              open a session; --print | --exec | --no-install
+                                     --provider <id> | --dir <path> | -- <harness flags>
+  dir [path]                         where sessions open (default: this shell's directory)
+  terminal [id|auto|custom] --command "<t>"   which terminal sessions open in
+  snapshot [--json] | status         the whole state, or the one-line summary
   config                             path to the config file
 `;
 
@@ -91,13 +81,21 @@ async function main() {
         const key = flag("key") ?? die("providers add needs --key");
         const api = (flag("api") ?? "chat") as "chat" | "messages" | "responses";
         const apis = flag("apis")?.split(",").map((s) => s.trim()) as ("chat" | "messages" | "responses")[] | undefined;
-        const p = addProvider({ name: flag("name"), id: flag("id"), apiUrl: url, apiKey: key, api, apis });
+        const reasoning = parseReasoning(flag("reasoning") ?? "auto");
+        const p = addProvider({ name: flag("name"), id: flag("id"), apiUrl: url, apiKey: key, api, apis, reasoning });
         console.log(`added ${bold(p.id)}  ${dim(p.apiUrl)}  ${dim(p.api)}`);
         return;
       }
       if (args[0] === "rm" || args[0] === "remove") {
         const id = args[1] ?? die("providers rm <id>");
         console.log(removeProvider(id) ? `removed ${id}` : die(`no provider ${id}`));
+        return;
+      }
+      if (args[0] === "reasoning") {
+        const p = resolveProvider(args[2]);
+        const level = parseReasoning(args[1]);
+        addProvider({ ...p, reasoning: level });
+        console.log(`${bold(p.id)} reasoning: ${bold(level)}`);
         return;
       }
       if (args[0] === "use") {
@@ -158,7 +156,11 @@ async function main() {
         if (!dialectsOf(provider).includes(h.dialect))
           die(`${h.label} speaks ${h.dialect}, which ${provider.name} does not serve (${dialectsOf(provider).join(", ")})`);
         const m = model ?? cfg.selected.model ?? die("run <model> [harness]");
-        const plan = buildLaunch(harnessId, { endpoint: provider.apiUrl, key: provider.apiKey, model: m, ...(await modelTraits(m)) }, flag("dir") ?? process.cwd());
+        const plan = buildLaunch(
+          harnessId,
+          { endpoint: provider.apiUrl, key: provider.apiKey, model: m, reasoning: provider.reasoning, ...(await modelTraits(m)) },
+          flag("dir") ?? process.cwd(),
+        );
         console.log([plan.bin, ...plan.args, ...extra].join(" "));
         const secret = /(_KEY|_TOKEN|^KEY|^TOKEN|APIKEY)$/;
         for (const [k, v] of Object.entries(plan.env)) console.log(dim(`${k}=${secret.test(k) ? "…" : v}`));
@@ -172,15 +174,17 @@ async function main() {
         const { command } = installHarness(target.id);
         console.log(dim(`installed with ${command}`));
       }
-      const res = await run({ harnessId, model, providerId: flag("provider"), cwd: flag("dir"), extraArgs: extra, ...(await modelTraits(model)) });
+      const cwd = sessionDir(flag("dir"));
+      const res = await run({ harnessId, model, providerId: flag("provider"), cwd, extraArgs: extra, ...(await modelTraits(model)) });
       if (has("exec")) {
         // run the harness here and now, with the same environment a terminal launch would get
         const r = spawnSync(res.plan.bin, res.plan.args, { stdio: "inherit", env: { ...process.env, ...res.plan.env }, cwd: res.plan.cwd });
         process.exit(r.status ?? 0);
       }
       console.log(`launching ${bold(res.plan.harness.label)} on ${bold(model ?? loadConfig().selected.model!)}`);
-      const opened = openScriptInTerminal(res.script, res.plan.harness.label);
-      if (!opened.opened) console.log(dim(`no terminal emulator found; run: bash ${opened.path}`));
+      const opened = openSession(harnessId, cwd, res.plan.harness.label);
+      console.log(dim(`  ${opened.terminal} · ${opened.command}`));
+      if (!opened.opened) die(`no terminal responded — try: terminal <id>`);
       return;
     }
 
@@ -205,6 +209,50 @@ async function main() {
       console.log(`${bold("selected")}  ${cfg.selected.model ?? dim("none")} ${cfg.selected.provider ? dim("on " + cfg.selected.provider) : ""}`);
       return;
     }
+
+    case "dir": {
+      const cfg = loadConfig();
+      if (!args[0]) {
+        console.log(`sessions open in ${bold(sessionDir())}${cfg.cwd ? "" : dim(" (the shell's directory)")}`);
+        return;
+      }
+      const next = setCwd(args[0]);
+      console.log(`sessions open in ${bold(next.cwd ?? sessionDir())}`);
+      return;
+    }
+
+    case "terminal": {
+      const cfg = loadConfig();
+      const id = args[0] ?? flag("set");
+      if (!id) {
+        const active = resolveTerminal(cfg.terminal, cfg.terminalCommand).id;
+        console.log(`${bold("sessions open in")} ${bold(active)}${cfg.terminal ? "" : dim(" (detected)")}`);
+        for (const t of TERMINALS) {
+          const mark = t.id === active ? bold("→") : " ";
+          const state = terminalInstalled(t) ? "" : dim("  not installed");
+          console.log(`${mark} ${t.id.padEnd(20)} ${t.label}${state}`);
+        }
+        console.log(dim(`\n  terminal <id|auto|custom>   --command "<template>" for custom`));
+        return;
+      }
+      if (id === "custom") {
+        const template = flag("command") ?? cfg.terminalCommand ?? die('terminal custom --command "open -a WezTerm {script}"');
+        setTerminal("custom", template);
+        console.log(`sessions open with: ${bold(template)}`);
+        return;
+      }
+      setTerminal(id, flag("command"));
+      console.log(`sessions open in: ${bold(resolveTerminal(id, flag("command")).label)}`);
+      return;
+    }
+
+    case "snapshot": {
+        const view = await snapshot(args[0]);
+        if (has("json")) return console.log(JSON.stringify(view, null, 2));
+        console.log(`${bold(view.selected.model ?? "no model")} on ${bold(view.selected.provider ?? "no provider")}`);
+        console.log(dim(`${view.providers.length} providers · ${view.models.length} models · reasoning ${view.providers[0]?.reasoning ?? "auto"}`));
+        return;
+      }
 
     case "config":
       console.log(CONFIG_PATH);
