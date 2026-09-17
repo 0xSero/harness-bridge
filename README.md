@@ -18,7 +18,7 @@ The core is a library. Everything else is a thin shell over it.
 ## Install
 
 ```bash
-git clone https://github.com/<owner>/harness-bridge && cd harness-bridge
+git clone https://github.com/0xSero/harness-bridge && cd harness-bridge
 bun install
 cd packages/cli && bun link        # puts `harness-bridge` and `hbr` on your PATH
 ```
