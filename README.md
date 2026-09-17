@@ -73,6 +73,9 @@ packages. For those the tool prints the vendor's install hint instead of inventi
 Nothing you own is edited — your `~/.claude.json`, `~/.codex/config.toml` and
 `~/.config/opencode` are untouched. The only thing that changes is this tool's own selection.
 
+Listings are coloured only when stdout is a terminal, so a pipe, a log or the macOS tray
+gets plain text; `NO_COLOR` forces plain output.
+
 ## Dialects
 
 A harness only gets offered when the endpoint speaks its dialect. This is a correctness

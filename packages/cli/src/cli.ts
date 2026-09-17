@@ -27,8 +27,10 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const argv = process.argv.slice(2);
-const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
-const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
+// escape codes are for a person at a terminal: a menu, a pipe or a log gets plain text
+const useColor = !!process.stdout.isTTY && !process.env.NO_COLOR;
+const dim = (s: string) => (useColor ? `\x1b[2m${s}\x1b[0m` : s);
+const bold = (s: string) => (useColor ? `\x1b[1m${s}\x1b[0m` : s);
 const die = (m: string): never => {
   console.error(`harness-bridge: ${m}`);
   process.exit(1);

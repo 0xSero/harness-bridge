@@ -99,17 +99,41 @@ func hb(_ args: [String]) -> (Int32, String) {
     return (p.terminationStatus, text)
 }
 
-/// ANSI-free view of a CLI listing: `harness-bridge models` prints "→ id   meta",
-/// `providers` prints "* id  url  api", `harnesses` prints "● id  label  dialect".
-func rows(_ output: String) -> [(String, Bool)] {
+/// A CLI listing line, without its escape codes or its marker column.
+struct Row {
+    let id: String
+    let selected: Bool
+    let detail: String
+}
+
+/// Escape sequences never belong in a menu title. The CLI omits them when stdout is not a
+/// terminal, but a menu must not depend on that being honoured.
+func stripANSI(_ s: String) -> String {
+    guard s.contains("\u{1B}") else { return s }
+    var out = ""
+    var inEscape = false
+    for ch in s {
+        if ch == "\u{1B}" { inEscape = true; continue }
+        if inEscape { if ch == "m" { inEscape = false }; continue }
+        out.append(ch)
+    }
+    return out
+}
+
+/// `models` prints "→ id  512k", `providers` "* id  url  chat", `harnesses` "● id  label  dialect".
+func rows(_ output: String) -> [Row] {
     output.split(separator: "\n").compactMap { line in
-        let s = String(line)
+        let s = stripANSI(String(line))
         guard !s.isEmpty, !s.contains(" models from ") else { return nil }
         let selected = s.hasPrefix("→") || s.hasPrefix("*")
-        var body = s.drop { "→*●○ ".contains($0) }
-        if let cut = body.range(of: "  ") { body = body[..<cut.lowerBound] }
+        var body = Substring(s).drop { "→*●○ ".contains($0) || $0 == " " }
+        var detail = ""
+        if let cut = body.range(of: "  ") {
+            detail = String(body[cut.upperBound...]).trimmingCharacters(in: .whitespaces)
+            body = body[..<cut.lowerBound]
+        }
         let id = body.trimmingCharacters(in: .whitespaces)
-        return id.isEmpty ? nil : (id, selected)
+        return id.isEmpty ? nil : Row(id: id, selected: selected, detail: detail)
     }
 }
 
@@ -125,43 +149,114 @@ final class Tray: NSObject, NSApplicationDelegate {
 
     @objc func rebuild() {
         menu.removeAllItems()
-        let (_, state) = hb(["status"])
-        let header = state.split(separator: "\n").last.map(String.init) ?? "harness-bridge"
-        let title = NSMenuItem(title: header, action: nil, keyEquivalent: "")
-        title.isEnabled = false
-        menu.addItem(title)
+
+        // header: the selection at a glance, not a copy of the CLI's status dump
+        let cfg = loadConfigSummary()
+        let header = NSMenuItem(title: cfg.model ?? "no model selected", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        if let provider = cfg.provider {
+            let sub = NSMenuItem(title: "on \(provider)", action: nil, keyEquivalent: "")
+            sub.isEnabled = false
+            menu.addItem(sub)
+        }
         menu.addItem(.separator())
 
-        let (_, pout) = hb(["providers"])
-        let provs = rows(pout)
-        menu.addItem(submenu("Providers", provs.map { ($0.0, #selector(selectProvider(_:))) }))
-        menu.addItem(submenu("Models", rows(hb(["models"]).1).map { ($0.0, #selector(selectModel(_:))) }))
-        menu.addItem(submenu("Harnesses", rows(hb(["harnesses"]).1).map { ($0.0, #selector(launchHarness(_:))) }))
+        let providers = rows(hb(["providers"]).1)
+        addSubmenu("Providers", providers) { row in
+            // the endpoint URL is too long for a menu; the id is what identifies it
+            MenuItem(row: row, action: #selector(self.selectProvider(_:)), target: self, detail: "")
+        }
+        let models = rows(hb(["models"]).1)
+        addSubmenu("Models", models) { row in
+            MenuItem(row: row, action: #selector(self.selectModel(_:)), target: self, enabled: row.selected ? false : nil)
+        }
+        let harnesses = rows(hb(["harnesses"]).1)
+        addSubmenu("Harnesses", harnesses) { row in
+            // a harness the endpoint cannot drive stays visible but inert, so the reason is readable
+            let refused = row.detail.contains("not served")
+            return MenuItem(row: row, action: #selector(self.launchHarness(_:)), target: self,
+                            title: self.harnessLabel(row), detail: self.harnessDialect(row),
+                            enabled: refused ? false : nil)
+        }
 
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Add provider…", action: #selector(addProvider), keyEquivalent: "a"))
-        menu.addItem(NSMenuItem(title: "Open web UI", action: #selector(openWeb), keyEquivalent: "w"))
+        menu.addItem(item("Add provider…", #selector(addProvider), "a"))
+        menu.addItem(item("Open web UI", #selector(openWeb), "w"))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(item("Quit", #selector(NSApplication.terminate(_:)), "q"))
         status.menu = menu
+        if HB_DEBUG {
+            for entry in menu.items {
+                trace("menu: \(entry.isEnabled ? "" : "(disabled) ")\(entry.title)")
+                for sub in entry.submenu?.items ?? [] {
+                    trace("menu:   \(sub.isEnabled ? "" : "(disabled) ")\(sub.state == .on ? "✓ " : "")\(sub.title)")
+                }
+            }
+        }
     }
 
-    func submenu(_ label: String, _ items: [(String, Selector)]) -> NSMenuItem {
-        let parent = NSMenuItem(title: label, action: nil, keyEquivalent: "")
+    /// The menu bar needs the selection, not the whole snapshot.
+    func loadConfigSummary() -> (model: String?, provider: String?) {
+        let out = hb(["status"]).1
+        for line in out.split(separator: "\n") where line.hasPrefix("selected") {
+            let parts = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
+            // "selected  <model>  on <provider>" / "selected  none"
+            guard parts.count >= 2 else { break }
+            let model = String(parts[1])
+            let provider = parts.count >= 4 ? String(parts[3]) : ""
+            return (model.isEmpty || model == "none" ? nil : model, provider.isEmpty ? nil : provider)
+        }
+        return (nil, nil)
+    }
+
+    /// A menu item carrying a row's identity, with a checkmark for the current selection.
+    struct MenuItem {
+        init(row: Row, action: Selector, target: AnyObject, title: String? = nil, detail: String? = nil, enabled: Bool? = nil) {
+            // the menu has one line per item, so a detail is set off with a dash rather than
+            // dropped: "deepseek-v4.1-flash — 512k"
+            let name = title ?? row.id
+            let note = (detail ?? row.detail).trimmingCharacters(in: .whitespaces)
+            item = NSMenuItem(title: note.isEmpty ? name : "\(name) — \(note)", action: action, keyEquivalent: "")
+            item.target = target
+            item.representedObject = row.id
+            item.state = row.selected ? .on : .off
+            if let enabled { item.isEnabled = enabled }
+        }
+        let item: NSMenuItem
+    }
+
+    func item(_ title: String, _ action: Selector, _ key: String) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        i.target = self
+        return i
+    }
+
+    /// Harness rows read "id  Label  dialect"; the menu shows the label and the dialect.
+    func harnessLabel(_ row: Row) -> String {
+        let parts = row.detail.components(separatedBy: "  ").filter { !$0.isEmpty }
+        let label = parts.first?.trimmingCharacters(in: .whitespaces) ?? row.id
+        return label.isEmpty ? row.id : label
+    }
+
+    func harnessDialect(_ row: Row) -> String {
+        let parts = row.detail.components(separatedBy: "  ").filter { !$0.isEmpty }
+        guard parts.count >= 2 else { return "" }
+        let dialect = parts[1].trimmingCharacters(in: .whitespaces)
+        return row.detail.contains("not served") ? "\(dialect) · not served" : dialect
+    }
+
+    func addSubmenu(_ title: String, _ rows: [Row], _ make: (Row) -> MenuItem) {
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let sub = NSMenu()
-        if items.isEmpty {
-            let none = NSMenuItem(title: "—", action: nil, keyEquivalent: "")
+        if rows.isEmpty {
+            let none = NSMenuItem(title: "none", action: nil, keyEquivalent: "")
             none.isEnabled = false
             sub.addItem(none)
         }
-        for (name, sel) in items {
-            let item = NSMenuItem(title: name, action: sel, keyEquivalent: "")
-            item.target = self
-            item.representedObject = name
-            sub.addItem(item)
-        }
+        for row in rows { sub.addItem(make(row).item) }
         parent.submenu = sub
-        return parent
+        menu.addItem(parent)
     }
 
     @objc func selectProvider(_ sender: NSMenuItem) {
