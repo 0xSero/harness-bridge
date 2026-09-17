@@ -98,6 +98,14 @@ async function main() {
         console.log(removeProvider(id) ? `removed ${id}` : die(`no provider ${id}`));
         return;
       }
+      if (args[0] === "use") {
+        const p = resolveProvider(args[1] ?? die("providers use <id>"));
+        const next = loadConfig();
+        next.selected = { provider: p.id, model: null };
+        saveConfig(next);
+        console.log(`using ${bold(p.id)} — run \`models\` to pick a model`);
+        return;
+      }
       if (!cfg.providers.length) return console.log(dim("no providers — providers add --name … --url … --key …"));
       for (const p of cfg.providers) {
         const sel = cfg.selected.provider === p.id ? bold("*") : " ";

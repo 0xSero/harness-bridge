@@ -217,7 +217,7 @@ export const INSTALLERS: Record<string, Installer> = {
   pi: { manager: "npm", pkg: "@oh-my-pi/pi-coding-agent", hint: "npm install -g @oh-my-pi/pi-coding-agent" },
   crush: { manager: "npm", pkg: "@charmland/crush", hint: "npm install -g @charmland/crush" },
   copilot: { manager: "npm", pkg: "@github/copilot", hint: "npm install -g @github/copilot" },
-  aider: { manager: "pip", pkg: "aider-chat", hint: "pipx install aider-chat" },
+  aider: { manager: "pip", pkg: "aider-chat", hint: "pipx install aider-chat — aider pins numpy==1.24.3, which will not build on Python 3.13; add --python 3.11" },
   omp: { manager: "manual", hint: "OMP ships a native binary — install it from https://oh-my-pi.dev" },
   grok: { manager: "manual", hint: "the Grok CLI ships a downloaded binary — install it from xAI" },
   hermes: { manager: "manual", hint: "install Hermes from its own repository" },

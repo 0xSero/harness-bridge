@@ -1,31 +1,88 @@
-// harness-bridge tray — a macOS menu bar front end over the `hb` CLI.
+// harness-bridge tray — a macOS menu bar front end over the `harness-bridge` CLI.
 // Every action shells out to the same core the CLI and web UI use; no state of its own.
 import AppKit
 import Foundation
 
-let HB = ProcessInfo.processInfo.environment["HB_BIN"] ?? "hb"
+/// The CLI to drive. A bundle opened from Finder or `open` inherits a minimal PATH
+/// (/usr/bin:/bin:/usr/sbin:/sbin), so the shell cannot find `harness-bridge`; the
+/// absolute path is resolved here and the binary is exec'd directly.
+let HB: String = {
+    if let explicit = ProcessInfo.processInfo.environment["HB_BIN"], !explicit.isEmpty { return explicit }
+    let home = NSHomeDirectory()
+    let candidates = [
+        "\(home)/.bun/bin/harness-bridge",
+        "\(home)/.local/bin/harness-bridge",
+        "/opt/homebrew/bin/harness-bridge",
+        "/usr/local/bin/harness-bridge",
+    ]
+    for path in candidates where FileManager.default.isExecutableFile(atPath: path) { return path }
+    return "harness-bridge" // last resort: let env search PATH
+}()
+
+let HB_DEBUG = ProcessInfo.processInfo.environment["HB_DEBUG"] == "1"
+
+/// The environment a GUI-launched app must hand to the CLI: its own PATH cannot find `bun`
+/// (the installed CLI is a `#!/usr/bin/env bun` shim) or the global bin directories.
+let HB_ENV: [String: String] = {
+    var env = ProcessInfo.processInfo.environment
+    let home = NSHomeDirectory()
+    let dirs = [
+        (HB as NSString).deletingLastPathComponent,
+        "\(home)/.bun/bin",
+        "\(home)/.local/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+    ].filter { !$0.isEmpty && FileManager.default.fileExists(atPath: $0) }
+    env["PATH"] = (dirs + [env["PATH"] ?? "/usr/bin:/bin"]).joined(separator: ":")
+    return env
+}()
+
+func trace(_ line: String) {
+    guard HB_DEBUG else { return }
+    let path = NSHomeDirectory() + "/.config/harness-bridge/tray.log"
+    let stamped = ISO8601DateFormatter().string(from: Date()) + " " + line + "\n"
+    guard let data = stamped.data(using: .utf8) else { return }
+    if let handle = FileHandle(forWritingAtPath: path) {
+        handle.seekToEndOfFile()
+        handle.write(data)
+        try? handle.close()
+    } else {
+        try? data.write(to: URL(fileURLWithPath: path))
+    }
+}
 
 func hb(_ args: [String]) -> (Int32, String) {
     let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    p.arguments = [HB] + args
+    if HB.contains("/") {
+        p.executableURL = URL(fileURLWithPath: HB)
+        p.arguments = args
+    } else {
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = [HB] + args
+    }
     let out = Pipe()
     p.standardOutput = out
     p.standardError = out
-    do { try p.run() } catch { return (127, "cannot run \(HB): \(error.localizedDescription)") }
+    p.environment = HB_ENV
+    do { try p.run() } catch {
+        trace("hb \(args.joined(separator: " ")) -> cannot run \(HB): \(error.localizedDescription)")
+        return (127, "cannot run \(HB): \(error.localizedDescription)")
+    }
     let data = out.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
-    return (p.terminationStatus, String(decoding: data, as: UTF8.self))
+    let text = String(decoding: data, as: UTF8.self)
+    trace("hb \(args.joined(separator: " ")) -> \(p.terminationStatus) \(text.prefix(200).replacingOccurrences(of: "\n", with: " | "))")
+    return (p.terminationStatus, text)
 }
 
-/// ANSI-free view of a CLI listing: `hb models` prints "→ id   meta"
+/// ANSI-free view of a CLI listing: `harness-bridge models` prints "→ id   meta",
+/// `providers` prints "* id  url  api", `harnesses` prints "● id  label  dialect".
 func rows(_ output: String) -> [(String, Bool)] {
     output.split(separator: "\n").compactMap { line in
         let s = String(line)
-        guard !s.isEmpty, !s.hasPrefix(" ") || s.hasPrefix("→") || s.hasPrefix("*") else { return nil }
-        if s.contains("models from") { return nil }
+        guard !s.isEmpty, !s.contains(" models from ") else { return nil }
         let selected = s.hasPrefix("→") || s.hasPrefix("*")
-        var body = s.drop { $0 == "→" || $0 == "*" || $0 == " " }
+        var body = s.drop { "→*●○ ".contains($0) }
         if let cut = body.range(of: "  ") { body = body[..<cut.lowerBound] }
         let id = body.trimmingCharacters(in: .whitespaces)
         return id.isEmpty ? nil : (id, selected)
@@ -84,8 +141,8 @@ final class Tray: NSObject, NSApplicationDelegate {
     }
 
     @objc func selectProvider(_ sender: NSMenuItem) {
-        _ = hb(["providers", "add"])
-        _ = hb(["--provider", sender.representedObject as? String ?? ""])
+        guard let id = sender.representedObject as? String, !id.isEmpty else { return }
+        _ = hb(["providers", "use", id])
         rebuild()
     }
     @objc func selectModel(_ sender: NSMenuItem) {
