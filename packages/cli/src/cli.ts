@@ -7,10 +7,11 @@ import {
   CONFIG_PATH, HARNESSES, REASONING_LEVELS, TERMINALS,
   addProvider, buildLaunch, dialectsOf, harnessById, harnessInstalled, installHarness,
   listModels, loadConfig, openSession, removeProvider, resolveProvider, resolveTerminal,
-  pinModel, run, saveConfig, selectModel, sessionDir, setCwd, setTerminal, snapshot, terminalInstalled,
+  pinModel, run, saveConfig, selectModel, sessionDir, setCwd, setTerminal, snapshot, terminalInstalled, terminalSource,
 } from "@harness-bridge/core";
 import type { ReasoningLevel } from "@harness-bridge/core";
 import { join } from "node:path";
+import { usage } from "./usage.ts";
 import { spawnSync } from "node:child_process";
 
 const argv = process.argv.slice(2);
@@ -53,23 +54,6 @@ function positional(): string[] {
   return out;
 }
 
-const usage = `harness-bridge — launch a coding harness on any OpenAI/Anthropic-compatible endpoint
-
-  providers | providers add --name N --url U --key K [--apis chat,messages] [--reasoning <level>]
-  providers rm <id> | providers use <id> | providers reasoning <level> [provider]
-  providers show <id> [--json]       one provider's settings (never the key)
-  models [provider]                  list live models
-  use <model> [provider]             select a model (only the selection is persisted)
-  harnesses [provider]               what is installed, and what this endpoint can drive
-  install <harness>                  install a harness so it can be launched
-  run [model] [harness]              open a session; --print | --exec | --no-install
-                                     --provider <id> | --dir <path> | -- <harness flags>
-  pin|unpin <model> | pins           keep models in the main view
-  dir [path]                         where sessions open (default: this shell's directory)
-  terminal [id|auto|custom] --command "<t>"   which terminal sessions open in
-  snapshot [--json] | status         the whole state, or the one-line summary
-  config                             path to the config file
-`;
 
 const cmd = positional()[0];
 const args = positional().slice(1);
@@ -164,11 +148,8 @@ async function main() {
         if (!dialectsOf(provider).includes(h.dialect))
           die(`${h.label} speaks ${h.dialect}, which ${provider.name} does not serve (${dialectsOf(provider).join(", ")})`);
         const m = model ?? cfg.selected.model ?? die("run <model> [harness]");
-        const plan = buildLaunch(
-          harnessId,
-          { endpoint: provider.apiUrl, key: provider.apiKey, model: m, reasoning: provider.reasoning, ...(await modelTraits(m)) },
-          flag("dir") ?? process.cwd(),
-        );
+        const target = { endpoint: provider.apiUrl, key: provider.apiKey, model: m, reasoning: provider.reasoning, ...(await modelTraits(m)) };
+        const plan = buildLaunch(harnessId, target, flag("dir") ?? process.cwd());
         console.log([plan.bin, ...plan.args, ...extra].join(" "));
         const secret = /(_KEY|_TOKEN|^KEY|^TOKEN|APIKEY)$/;
         for (const [k, v] of Object.entries(plan.env)) console.log(dim(`${k}=${secret.test(k) ? "…" : v}`));
@@ -192,7 +173,10 @@ async function main() {
       console.log(`launching ${bold(res.plan.harness.label)} on ${bold(model ?? loadConfig().selected.model!)}`);
       const opened = openSession(harnessId, cwd, res.plan.harness.label);
       console.log(dim(`  ${opened.terminal} · ${opened.command}`));
-      if (!opened.opened) die(`no terminal responded — try: terminal <id>`);
+      if (!opened.opened) {
+        const t = TERMINALS.find((x) => x.id === opened.terminal);
+        die(`${opened.terminal} did not open${t && !terminalInstalled(t) ? " — it is not installed on this machine" : ""}`);
+      }
       return;
     }
 
@@ -248,11 +232,9 @@ async function main() {
       const id = args[0] ?? flag("set");
       if (!id) {
         const active = resolveTerminal(cfg.terminal, cfg.terminalCommand).id;
-        console.log(`${bold("sessions open in")} ${bold(active)}${cfg.terminal ? "" : dim(" (detected)")}`);
+        console.log(`${bold("sessions open in")} ${bold(active)}${cfg.terminal ? "" : dim(` (${terminalSource(cfg.terminal)})`)}`);
         for (const t of TERMINALS) {
-          const mark = t.id === active ? bold("→") : " ";
-          const state = terminalInstalled(t) ? "" : dim("  not installed");
-          console.log(`${mark} ${t.id.padEnd(20)} ${t.label}${state}`);
+          console.log(`${t.id === active ? bold("→") : " "} ${t.id.padEnd(20)} ${t.label}${terminalInstalled(t) ? "" : dim("  not installed")}`);
         }
         console.log(dim(`\n  terminal <id|auto|custom>   --command "<template>" for custom`));
         return;
@@ -264,7 +246,8 @@ async function main() {
         return;
       }
       setTerminal(id, flag("command"));
-      console.log(`sessions open in: ${bold(resolveTerminal(id, flag("command")).label)}`);
+      const chosen = resolveTerminal(id, flag("command"));
+      console.log(`sessions open in: ${bold(chosen.label)}${terminalInstalled(chosen) ? "" : dim(" (not installed on this machine)")}`);
       return;
     }
 

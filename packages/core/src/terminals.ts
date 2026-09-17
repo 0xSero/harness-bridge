@@ -110,6 +110,14 @@ export const customTerminal = (template: string): Terminal => ({
       .map((part) => part.replaceAll("{command}", s.command).replaceAll("{dir}", s.dir).replaceAll("{name}", s.name)),
 });
 
+/** How the terminal was chosen, so the CLI does not call a fallback "detected". */
+export function terminalSource(configured?: string): "configured" | "detected" | "default" {
+  if (configured && configured !== "auto") return "configured";
+  const named = process.env.TERM_PROGRAM ? BY_TERM_PROGRAM[process.env.TERM_PROGRAM] : undefined;
+  const warped = process.env.__CFBundleIdentifier?.toLowerCase().includes("warp") ? "warp" : undefined;
+  return TERMINALS.some((t) => t.id === (named ?? warped)) ? "detected" : "default";
+}
+
 /** A terminal named by the environment the user is already in. */
 const BY_TERM_PROGRAM: Record<string, string> = {
   WarpTerminal: "warp",
@@ -140,7 +148,10 @@ export function resolveTerminal(configured?: string, template?: string): Termina
     (process.env.__CFBundleIdentifier?.toLowerCase().includes("warp") ? "warp" : undefined);
   const match = detected && TERMINALS.find((t) => t.id === detected);
   if (match) return match;
-  const fallback = TERMINALS.find(terminalInstalled);
-  if (!fallback) throw new Error(`no terminal found — set one with: terminal <${TERMINALS.map((t) => t.id).join("|")}>`);
-  return fallback;
+  // a headless host has no emulator installed; that must not stop the CLI listing terminals or
+  // reading state, so fall back to the platform's conventional one and let the launch report it
+  const conventional = process.platform === "darwin" ? "terminal" : "x-terminal-emulator";
+  return TERMINALS.find(terminalInstalled)
+    ?? TERMINALS.find((t) => t.id === conventional)
+    ?? TERMINALS[0];
 }
