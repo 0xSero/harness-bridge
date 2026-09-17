@@ -107,19 +107,20 @@ struct IconButton: View {
     }
 }
 
-/// The app mark: the two-way arrow the menu bar shows, on a tinted tile.
+/// The Local AI mark from the bundle. A build without the asset still renders something.
 struct Mark: View {
-    var size: CGFloat = 26
+    var size: CGFloat = 28
     var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
-            .fill(LinearGradient(colors: [Color.accentColor, Color.accentColor.opacity(0.72)],
-                                 startPoint: .top, endPoint: .bottom))
-            .frame(width: size, height: size)
-            .overlay(
-                Image(systemName: "arrow.left.arrow.right")
-                    .font(.system(size: size * 0.5, weight: .semibold))
-                    .foregroundStyle(.white),
-            )
+        if let logo = NSImage(named: "LocalAIMark") {
+            Image(nsImage: logo).resizable().interpolation(.high)
+                .frame(width: size, height: size)
+        } else {
+            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                .fill(Color.accentColor)
+                .frame(width: size, height: size)
+                .overlay(Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: size * 0.5, weight: .semibold)).foregroundStyle(.white))
+        }
     }
 }
 

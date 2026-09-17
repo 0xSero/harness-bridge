@@ -6,7 +6,18 @@ command -v swiftc >/dev/null 2>&1 || { echo "swiftc not found: install Xcode com
 
 app="$here/dist/Local AI.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+
+# the Local AI mark, rendered from the same vector the plugin uses
+iconset=$(mktemp -d)/AppIcon.iconset
+mkdir -p "$iconset"
+for size in 16 32 128 256 512; do
+  sips -z $size $size "$here/assets/icon-1024.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+  double=$((size * 2))
+  sips -z $double $double "$here/assets/icon-1024.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
+cp "$here/assets/mark-256.png" "$app/Contents/Resources/LocalAIMark.png"
 
 swiftc -O -o "$app/Contents/MacOS/harness-bridge-tray" "$here/Bridge.swift" "$here/MainView.swift" "$here/SettingsView.swift" "$here/App.swift" "$here/main.swift" -framework AppKit
 
@@ -18,6 +29,7 @@ cat >"$app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>Local AI</string>
   <key>CFBundleDisplayName</key><string>Local AI</string>
   <key>CFBundleIdentifier</key><string>sero.local-ai.tray</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleExecutable</key><string>harness-bridge-tray</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
@@ -30,3 +42,12 @@ cat >"$app/Contents/Info.plist" <<'PLIST'
 PLIST
 
 echo "built $app"
+
+# a DMG with the app and a shortcut to Applications
+dmg="$here/dist/Local AI.dmg"
+stage=$(mktemp -d)
+cp -R "$app" "$stage/"
+ln -s /Applications "$stage/Applications"
+rm -f "$dmg"
+hdiutil create -volname "Local AI" -srcfolder "$stage" -ov -format UDZO "$dmg" >/dev/null
+echo "built $dmg"

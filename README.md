@@ -191,10 +191,14 @@ loopback; no authentication beyond that.
 ## Tray (macOS)
 
 ```bash
-bash packages/tray/build.sh                      # builds "Harness Bridge.app"
-cp -R "packages/tray/dist/Harness Bridge.app" ~/Applications/
-open -a "$HOME/Applications/Harness Bridge.app"
+bash packages/tray/build.sh          # builds "Local AI.app" and "Local AI.dmg"
+open "packages/tray/dist/Local AI.dmg"   # drag to Applications
+open -a "/Applications/Local AI.app"
 ```
+
+The build renders the Local AI mark (`packages/tray/assets/logo.svg`, the same vector the
+plugin uses) into `AppIcon.icns` and the panel's header image, then packages the app with an
+`/Applications` shortcut into a compressed DMG.
 
 A `⇄` item in the menu bar with Providers / Models / Harnesses submenus, an *Add provider…*
 flow, and *Open web UI*. It is an `LSUIElement` bundle, so there is no Dock icon.
