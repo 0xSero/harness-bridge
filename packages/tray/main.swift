@@ -51,7 +51,26 @@ func trace(_ line: String) {
     }
 }
 
-func hb(_ args: [String]) -> (Int32, String) {
+/// Whether something is already listening on a loopback port.
+func portOpen(_ port: UInt16) -> Bool {
+    let s = socket(AF_INET, SOCK_STREAM, 0)
+    guard s >= 0 else { return false }
+    defer { close(s) }
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = port.bigEndian
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let r = withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            connect(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    return r == 0
+}
+
+/// Every CLI invocation goes through here: a GUI-launched app must supply its own PATH
+/// (see HB_ENV) or the CLI's `#!/usr/bin/env bun` shebang cannot resolve.
+func hbProcess(_ args: [String]) -> Process {
     let p = Process()
     if HB.contains("/") {
         p.executableURL = URL(fileURLWithPath: HB)
@@ -60,10 +79,15 @@ func hb(_ args: [String]) -> (Int32, String) {
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = [HB] + args
     }
+    p.environment = HB_ENV
+    return p
+}
+
+func hb(_ args: [String]) -> (Int32, String) {
+    let p = hbProcess(args)
     let out = Pipe()
     p.standardOutput = out
     p.standardError = out
-    p.environment = HB_ENV
     do { try p.run() } catch {
         trace("hb \(args.joined(separator: " ")) -> cannot run \(HB): \(error.localizedDescription)")
         return (127, "cannot run \(HB): \(error.localizedDescription)")
@@ -170,11 +194,25 @@ final class Tray: NSObject, NSApplicationDelegate {
     }
 
     @objc func openWeb() {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        p.arguments = [HB, "serve"]
-        try? p.run()
-        NSWorkspace.shared.open(URL(string: "http://127.0.0.1:4141")!)
+        let port: UInt16 = 4141
+        if !portOpen(port) {
+            let p = hbProcess(["serve", "--port", String(port)])
+            do { try p.run() } catch {
+                alert("Could not start the web UI", "\(HB) serve: \(error.localizedDescription)")
+                return
+            }
+            // the browser is only useful once the server is listening
+            var ready = false
+            for _ in 0..<40 where !ready {
+                if portOpen(port) { ready = true; break }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            if !ready {
+                alert("Web UI did not start", "\(HB) serve did not listen on 127.0.0.1:\(port)")
+                return
+            }
+        }
+        NSWorkspace.shared.open(URL(string: "http://127.0.0.1:\(port)")!)
     }
 
     func alert(_ title: String, _ body: String) {
