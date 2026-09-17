@@ -110,13 +110,20 @@ loopback; no authentication beyond that.
 ## Tray (macOS)
 
 ```bash
-bash packages/tray/build.sh
-packages/tray/dist/harness-bridge-tray
+bash packages/tray/build.sh                      # builds "Harness Bridge.app"
+cp -R "packages/tray/dist/Harness Bridge.app" ~/Applications/
+open -a "$HOME/Applications/Harness Bridge.app"
 ```
 
 A `⇄` item in the menu bar with Providers / Models / Harnesses submenus, an *Add provider…*
-flow, and *Open web UI*. Every action shells out to the CLI, so there is no second copy of
-the logic.
+flow, and *Open web UI*. It is an `LSUIElement` bundle, so there is no Dock icon.
+
+Every action shells out to the CLI, so there is no second copy of the logic. Because a
+bundle opened from Finder inherits a minimal `PATH`, the tray resolves the CLI by absolute
+path (`$HOME/.bun/bin`, `~/.local/bin`, Homebrew, `/usr/local`) and hands the child an
+augmented `PATH` — without that, both `harness-bridge` and the `bun` its shim needs would be
+unreachable. Set `HB_BIN` to override the CLI, and `HB_DEBUG=1` to log every invocation to
+`~/.config/harness-bridge/tray.log`.
 
 ## Layout
 
