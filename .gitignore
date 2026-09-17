@@ -1,0 +1,14 @@
+# secrets — never commit
+.env
+.env.*
+*.key
+*.pem
+config.json
+secrets*
+!packages/**/config.json
+
+# runtime state written by the tool itself
+packages/tray/dist/
+node_modules/
+*.log
+.DS_Store

@@ -1,0 +1,9 @@
+{
+  "name": "@harness-bridge/web",
+  "version": "0.1.0",
+  "description": "Basic web UI over harness-bridge core.",
+  "type": "module",
+  "bin": { "harness-bridge-web": "./src/server.ts" },
+  "dependencies": { "@harness-bridge/core": "workspace:*" },
+  "license": "MIT"
+}

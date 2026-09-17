@@ -1,0 +1,14 @@
+{
+  "name": "harness-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Point any coding harness at any OpenAI/Anthropic-compatible inference endpoint.",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "bun test",
+    "hb": "bun packages/cli/src/cli.ts",
+    "web": "bun packages/web/src/server.ts",
+    "tray": "bash packages/tray/build.sh && packages/tray/dist/harness-bridge-tray"
+  },
+  "license": "MIT"
+}

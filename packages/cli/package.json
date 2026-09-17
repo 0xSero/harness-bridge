@@ -1,0 +1,9 @@
+{
+  "name": "@harness-bridge/cli",
+  "version": "0.1.0",
+  "description": "CLI wrapper over harness-bridge core.",
+  "type": "module",
+  "bin": { "harness-bridge": "./src/cli.ts", "hbr": "./src/cli.ts" },
+  "dependencies": { "@harness-bridge/core": "workspace:*" },
+  "license": "MIT"
+}

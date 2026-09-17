@@ -1,0 +1,44 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "harness-bridge",
+    },
+    "packages/cli": {
+      "name": "@harness-bridge/cli",
+      "version": "0.1.0",
+      "bin": {
+        "hb": "./src/cli.ts",
+        "harness-bridge": "./src/cli.ts",
+      },
+      "dependencies": {
+        "@harness-bridge/core": "workspace:*",
+      },
+    },
+    "packages/core": {
+      "name": "@harness-bridge/core",
+      "version": "0.1.0",
+      "bin": {
+        "harness-bridge-core": "./src/core.ts",
+      },
+    },
+    "packages/web": {
+      "name": "@harness-bridge/web",
+      "version": "0.1.0",
+      "bin": {
+        "harness-bridge-web": "./src/server.ts",
+      },
+      "dependencies": {
+        "@harness-bridge/core": "workspace:*",
+      },
+    },
+  },
+  "packages": {
+    "@harness-bridge/cli": ["@harness-bridge/cli@workspace:packages/cli"],
+
+    "@harness-bridge/core": ["@harness-bridge/core@workspace:packages/core"],
+
+    "@harness-bridge/web": ["@harness-bridge/web@workspace:packages/web"],
+  }
+}
