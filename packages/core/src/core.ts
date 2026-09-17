@@ -64,6 +64,55 @@ export function pinModel(model: string, on = true): Config {
   return cfg;
 }
 
+export interface DialectProbe {
+  dialect: Dialect;
+  ok: boolean;
+  status: number;
+}
+
+/**
+ * Ask the endpoint which dialects it actually serves, with a one-token request each, and
+ * record the answer. This replaces trusting whatever `--apis` said at add time: an endpoint
+ * that implements `/messages` but not `/responses` is common, and a wrong guess silently
+ * hides working harnesses.
+ */
+export async function scanDialects(providerId?: string): Promise<{ provider: Provider; probes: DialectProbe[] }> {
+  const p = resolveProvider(providerId);
+  const cfg = loadConfig();
+  const model = (cfg.selected.provider === p.id ? cfg.selected.model : null) ?? (await listModels(p.id).catch(() => []))[0]?.id ?? "test";
+  const base = apiBases(p.apiUrl).v1;
+  const bodies: Record<Dialect, unknown> = {
+    chat: { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+    messages: { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+    responses: { model, input: "ping", max_output_tokens: 16 },
+  };
+  const probes: DialectProbe[] = [];
+  for (const dialect of ["chat", "messages", "responses"] as Dialect[]) {
+    const path = dialect === "chat" ? "chat/completions" : dialect;
+    try {
+      const res = await fetch(`${base}/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${p.apiKey}` },
+        body: JSON.stringify(bodies[dialect]),
+        signal: AbortSignal.timeout(20_000),
+      });
+      probes.push({ dialect, ok: res.ok, status: res.status });
+    } catch {
+      probes.push({ dialect, ok: false, status: 0 });
+    }
+  }
+  const served = probes.filter((d) => d.ok).map((d) => d.dialect);
+  if (served.length) {
+    const i = cfg.providers.findIndex((x) => x.id === p.id);
+    if (i >= 0) {
+      cfg.providers[i].apis = served;
+      if (cfg.selected.provider === p.id && !served.includes(cfg.providers[i].api)) cfg.providers[i].api = served[0];
+      saveConfig(cfg);
+    }
+  }
+  return { provider: p, probes };
+}
+
 /** Record the flags a harness launches with. Pass null to restore the default. */
 export function setHarnessFlags(id: string, flags: string[] | null): Config {
   const cfg = loadConfig();

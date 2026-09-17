@@ -7,7 +7,7 @@ import {
   CONFIG_PATH, HARNESSES, REASONING_LEVELS, TERMINALS,
   addProvider, buildLaunch, dialectsOf, harnessById, harnessInstalled, installHarness,
   DEFAULT_ARGS, listModels, loadConfig, openSession, removeProvider, resolveProvider, resolveTerminal,
-  pinModel, run, saveConfig, selectModel, sessionDir, setCwd, setHarnessFlags, setTerminal, snapshot, terminalInstalled, terminalSource,
+  pinModel, run, saveConfig, scanDialects, selectModel, sessionDir, setCwd, setHarnessFlags, setTerminal, snapshot, terminalInstalled, terminalSource,
 } from "@harness-bridge/core";
 import type { ReasoningLevel } from "@harness-bridge/core";
 import { join } from "node:path";
@@ -83,6 +83,11 @@ async function main() {
         addProvider({ ...p, reasoning: level });
         console.log(`${bold(p.id)} reasoning: ${bold(level)}`);
         return;
+      }
+      if (args[0] === "scan") {
+        const { provider, probes } = await scanDialects(args[1]);
+        for (const pr of probes) console.log(`${pr.ok ? bold("live") : dim("no  ")}  ${pr.dialect.padEnd(10)} ${dim(`http ${pr.status}`)}`);
+        console.log(`${bold(provider.id)} serves: ${bold(probes.filter((x) => x.ok).map((x) => x.dialect).join(", ") || "nothing")}`);
       }
       if (args[0] === "show") {
         const p = resolveProvider(args[1]);
@@ -264,9 +269,7 @@ async function main() {
         return;
       }
 
-    case "config":
-      console.log(CONFIG_PATH);
-      return;
+    case "config": console.log(CONFIG_PATH); return;
 
     case "serve": {
       const port = flag("port") ?? "4141";

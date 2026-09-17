@@ -125,6 +125,11 @@ harness-bridge run --safe claude           # omit them for this one launch
 A harness is only offered when the endpoint speaks its dialect. That is a correctness rule,
 not a preference: Responses-shaped traffic to a Chat endpoint fails on the first turn.
 
+Which dialects an endpoint serves is **discovered, not declared**: `providers scan` sends a
+one-token request to `/chat/completions`, `/messages` and `/responses` and records what
+answers. Running it after a provider changes — or an engine gains a dialect — is what
+unblocks a harness that was greyed out.
+
 | Harness | Dialect | How it reaches the endpoint |
 |---|---|---|
 | `claude` | `messages` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, `--model` |
