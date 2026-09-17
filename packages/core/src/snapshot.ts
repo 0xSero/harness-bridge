@@ -3,19 +3,12 @@
  * and the menu bar app all read this instead of each composing its own view of the config.
  */
 import {
-  CONFIG_PATH,
-  HARNESSES,
-  INSTALLERS,
-  TERMINALS,
-  dialectsOf,
-  harnessInstalled,
-  listModels,
-  loadConfig,
-  resolveTerminal,
-  sessionDir,
-  terminalInstalled,
+  CONFIG_PATH, HARNESSES, INSTALLERS, TERMINALS, dialectsOf, harnessInstalled,
+  loadConfig, resolveTerminal, sessionDir, terminalInstalled,
 } from "./core.ts";
-import type { Dialect, ModelInfo, ReasoningLevel } from "./core.ts";
+import { listModels } from "./models.ts";
+import type { Dialect, ReasoningLevel } from "./core.ts";
+import type { ModelInfo } from "./models.ts";
 
 export interface Snapshot {
   config: string;

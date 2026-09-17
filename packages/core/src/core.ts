@@ -12,7 +12,10 @@ import { dirname, join, resolve } from "node:path";
 // harnesses.ts and terminals.ts hold the tables; this module is the entry point
 export * from "./harnesses.ts";
 export * from "./terminals.ts";
-import { HARNESSES, INSTALLERS, THINKING_TOKENS, harnessById, harnessInstalled, installHarness, writePrivate } from "./harnesses.ts";
+import {
+  DEFAULT_ARGS, HARNESSES, INSTALLERS, THINKING_TOKENS,
+  harnessById, harnessFlags, harnessInstalled, installHarness, withHarnessFlags, writePrivate,
+} from "./harnesses.ts";
 import type { Dialect, ReasoningLevel } from "./harnesses.ts";
 import { TERMINALS, resolveTerminal, terminalInstalled } from "./terminals.ts";
 
@@ -41,13 +44,8 @@ export interface Config {
   cwd?: string;
   /** models kept in the main view, in the order they were pinned */
   pinned?: string[];
-}
-
-export interface ModelInfo {
-  id: string;
-  name?: string;
-  contextWindow?: number;
-  vision?: boolean;
+  /** extra flags per harness, overriding DEFAULT_ARGS */
+  agentArgs?: Record<string, string[]>;
 }
 
 export const CONFIG_DIR = process.env.HARNESS_BRIDGE_HOME || join(homedir(), ".config", "harness-bridge");
@@ -64,6 +62,15 @@ export function pinModel(model: string, on = true): Config {
   cfg.pinned = on ? (pinned.includes(model) ? pinned : [...pinned, model]) : pinned.filter((m) => m !== model);
   saveConfig(cfg);
   return cfg;
+}
+
+/** Record the flags a harness launches with. Pass null to restore the default. */
+export function setHarnessFlags(id: string, flags: string[] | null): Config {
+  const cfg = loadConfig();
+  if (!harnessById(id)) throw new Error(`unknown harness: ${id}`);
+  const next = withHarnessFlags(cfg, id, flags);
+  saveConfig(next as Config);
+  return next as Config;
 }
 
 /** Record where sessions open. An empty path clears it and falls back to the shell's directory. */
@@ -101,6 +108,7 @@ export function loadConfig(): Config {
       terminalCommand: raw.terminalCommand,
       cwd: raw.cwd,
       pinned: raw.pinned ?? [],
+      agentArgs: raw.agentArgs ?? {},
     };
   } catch {
     return empty();
@@ -162,59 +170,6 @@ export function selectModel(model: string, providerId?: string): Config {
   return cfg;
 }
 
-// ---------------------------------------------------------------- models
-
-/**
- * Model lists change rarely but every refresh wants one, and each CLI invocation is a fresh
- * process — so the cache is on disk, which is what makes the menu bar panel open instantly.
- */
-const MODEL_TTL_MS = 30_000;
-const cachePath = (id: string) => join(CONFIG_DIR, "cache", `models-${id}.json`);
-
-export async function listModels(providerId?: string, fresh = false): Promise<ModelInfo[]> {
-  const p = resolveProvider(providerId);
-  if (!fresh) {
-    try {
-      const c = JSON.parse(readFileSync(cachePath(p.id), "utf8")) as { at: number; apiUrl: string; models: ModelInfo[] };
-      // a changed endpoint invalidates the cache, even inside the window
-      if (Date.now() - c.at < MODEL_TTL_MS && c.apiUrl === p.apiUrl) return c.models;
-    } catch {}
-  }
-  const res = await fetch(`${apiBases(p.apiUrl).v1}/models`, {
-    headers: { Authorization: `Bearer ${p.apiKey}` },
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) throw new Error(`models: ${res.status} ${res.statusText}`);
-  const body: unknown = await res.json();
-  let rows: unknown[] = [];
-  if (Array.isArray(body)) rows = body;
-  else if (body && typeof body === "object" && "data" in body && Array.isArray(body.data)) rows = body.data;
-  const str = (v: unknown) => (typeof v === "string" ? v : undefined); // 3+ call sites
-  const num = (v: unknown) => (typeof v === "number" ? v : undefined); // 3+ call sites
-  const out: ModelInfo[] = [];
-  for (const row of rows) {
-    if (!row || typeof row !== "object") continue;
-    const id = ("id" in row ? str(row.id) : undefined) ?? ("name" in row ? str(row.name) : undefined);
-    if (!id) continue;
-    const arch = "architecture" in row && row.architecture && typeof row.architecture === "object" ? row.architecture : null;
-    const modalities = arch && "input_modalities" in arch && Array.isArray(arch.input_modalities) ? arch.input_modalities : [];
-    const top = "top_provider" in row && row.top_provider && typeof row.top_provider === "object" ? row.top_provider : null;
-    out.push({
-      id,
-      name: ("name" in row ? str(row.name) : undefined) ?? id,
-      contextWindow:
-        num("context_window" in row ? row.context_window : undefined) ??
-        num("context_length" in row ? row.context_length : undefined) ??
-        num("max_model_len" in row ? row.max_model_len : undefined) ??
-        num(top && "context_length" in top ? top.context_length : undefined),
-      vision: "vision" in row && typeof row.vision === "boolean" ? row.vision : modalities.includes("image"),
-    });
-  }
-  mkdirSync(dirname(cachePath(p.id)), { recursive: true, mode: 0o700 });
-  writeFileSync(cachePath(p.id), JSON.stringify({ at: Date.now(), apiUrl: p.apiUrl, models: out }), { mode: 0o600 });
-  return out;
-}
-
 /** the dialects an endpoint accepts; a provider without an explicit list serves its primary one */
 export const dialectsOf = (p: Provider): Dialect[] => (p.apis?.length ? p.apis : [p.api]);
 
@@ -222,6 +177,8 @@ export const dialectsOf = (p: Provider): Dialect[] => (p.apis?.length ? p.apis :
 
 export interface LaunchPlan {
   harness: Harness;
+  /** the model this plan points at */
+  model: string;
   bin: string;
   env: Record<string, string>;
   args: string[];
@@ -382,7 +339,7 @@ export function buildLaunch(harnessId: string, t: LaunchTarget, cwd = process.cw
       break;
   }
   for (const f of files) writePrivate(f.path, f.data);
-  return { harness: h, bin, env, args, files, cwd };
+  return { harness: h, model: t.model, bin, env, args, files, cwd };
 }
 
 // ---------------------------------------------------------------- sessions
@@ -429,9 +386,11 @@ export interface RunOptions {
   vision?: boolean;
   /** override the provider's reasoning setting for this launch */
   reasoning?: ReasoningLevel;
+  /** omit this harness's default flags (they skip its own confirmation prompts) */
+  safe?: boolean;
 }
 
-export async function run(opts: RunOptions): Promise<{ plan: LaunchPlan }> {
+export async function run(opts: RunOptions): Promise<{ plan: LaunchPlan; flags: string[] }> {
   const cfg = loadConfig();
   const provider = resolveProvider(opts.providerId);
   const model = opts.model || (cfg.selected.provider === provider.id ? cfg.selected.model : null);
@@ -442,11 +401,11 @@ export async function run(opts: RunOptions): Promise<{ plan: LaunchPlan }> {
     throw new Error(
       `${wanted.label} speaks ${wanted.dialect}, which ${provider.name} does not serve (${dialectsOf(provider).join(", ")})`,
     );
-  if (opts.model && opts.model !== cfg.selected.model) selectModel(opts.model, provider.id);
   const target: LaunchTarget = { endpoint: provider.apiUrl, key: provider.apiKey, model, context: opts.context, vision: opts.vision, reasoning: opts.reasoning ?? provider.reasoning };
   const plan = buildLaunch(opts.harnessId, target, opts.cwd);
-  if (opts.extraArgs?.length) plan.args.push(...opts.extraArgs);
-  return { plan };
+  const flags = opts.safe ? [] : harnessFlags(opts.harnessId, cfg.agentArgs);
+  plan.args.push(...flags, ...(opts.extraArgs ?? []));
+  return { plan, flags };
 }
 
 /**

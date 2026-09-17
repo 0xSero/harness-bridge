@@ -6,8 +6,8 @@
 import {
   CONFIG_PATH, HARNESSES, REASONING_LEVELS, TERMINALS,
   addProvider, buildLaunch, dialectsOf, harnessById, harnessInstalled, installHarness,
-  listModels, loadConfig, openSession, removeProvider, resolveProvider, resolveTerminal,
-  pinModel, run, saveConfig, selectModel, sessionDir, setCwd, setTerminal, snapshot, terminalInstalled, terminalSource,
+  DEFAULT_ARGS, listModels, loadConfig, openSession, removeProvider, resolveProvider, resolveTerminal,
+  pinModel, run, saveConfig, selectModel, sessionDir, setCwd, setHarnessFlags, setTerminal, snapshot, terminalInstalled, terminalSource,
 } from "@harness-bridge/core";
 import type { ReasoningLevel } from "@harness-bridge/core";
 import { join } from "node:path";
@@ -141,18 +141,16 @@ async function main() {
       const model = args[0];
       const harnessId = args[1] ?? flag("harness") ?? "claude";
       const extra = argv.includes("--") ? argv.slice(argv.indexOf("--") + 1) : [];
+      // one path for preview and launch: a preview that builds its own plan can disagree
+      const opts = {
+        harnessId, model, providerId: flag("provider"), cwd: sessionDir(flag("dir")),
+        extraArgs: extra, safe: has("safe"), ...(await modelTraits(model)),
+      };
+      const res = await run(opts);
       if (has("print")) {
-        const cfg = loadConfig();
-        const provider = resolveProvider(flag("provider"));
-        const h = harnessById(harnessId) ?? die(`unknown harness: ${harnessId}`);
-        if (!dialectsOf(provider).includes(h.dialect))
-          die(`${h.label} speaks ${h.dialect}, which ${provider.name} does not serve (${dialectsOf(provider).join(", ")})`);
-        const m = model ?? cfg.selected.model ?? die("run <model> [harness]");
-        const target = { endpoint: provider.apiUrl, key: provider.apiKey, model: m, reasoning: provider.reasoning, ...(await modelTraits(m)) };
-        const plan = buildLaunch(harnessId, target, flag("dir") ?? process.cwd());
-        console.log([plan.bin, ...plan.args, ...extra].join(" "));
+        console.log([res.plan.bin, ...res.plan.args].join(" "));
         const secret = /(_KEY|_TOKEN|^KEY|^TOKEN|APIKEY)$/;
-        for (const [k, v] of Object.entries(plan.env)) console.log(dim(`${k}=${secret.test(k) ? "…" : v}`));
+        for (const [k, v] of Object.entries(res.plan.env)) console.log(dim(`${k}=${secret.test(k) ? "…" : v}`));
         return;
       }
       // a missing harness is installed, then launched — unless --no-install says otherwise
@@ -160,23 +158,20 @@ async function main() {
       if (!harnessInstalled(target)) {
         if (has("no-install")) die(`${target.label} is not installed (run: harness-bridge install ${target.id})`);
         console.log(`installing ${bold(target.label)}…`);
-        const { command } = installHarness(target.id);
-        console.log(dim(`installed with ${command}`));
+        console.log(dim(`installed with ${installHarness(target.id).command}`));
       }
-      const cwd = sessionDir(flag("dir"));
-      const res = await run({ harnessId, model, providerId: flag("provider"), cwd, extraArgs: extra, ...(await modelTraits(model)) });
       if (has("exec")) {
         // run the harness here and now, with the same environment a terminal launch would get
         const r = spawnSync(res.plan.bin, res.plan.args, { stdio: "inherit", env: { ...process.env, ...res.plan.env }, cwd: res.plan.cwd });
         process.exit(r.status ?? 0);
       }
-      console.log(`launching ${bold(res.plan.harness.label)} on ${bold(model ?? loadConfig().selected.model!)}`);
-      const opened = openSession(harnessId, cwd, res.plan.harness.label);
+      // launching persists the selection; previewing does not
+      selectModel(res.plan.model, flag("provider"));
+      console.log(`launching ${bold(res.plan.harness.label)} on ${bold(res.plan.model)}${res.flags.length ? dim(` with ${res.flags.join(" ")}`) : ""}`);
+      const opened = openSession(harnessId, opts.cwd, res.plan.harness.label);
       console.log(dim(`  ${opened.terminal} · ${opened.command}`));
-      if (!opened.opened) {
-        const t = TERMINALS.find((x) => x.id === opened.terminal);
-        die(`${opened.terminal} did not open${t && !terminalInstalled(t) ? " — it is not installed on this machine" : ""}`);
-      }
+      const t = TERMINALS.find((x) => x.id === opened.terminal);
+      if (!opened.opened) die(`${opened.terminal} did not open${t && !terminalInstalled(t) ? " — it is not installed" : ""}`);
       return;
     }
 
@@ -213,6 +208,16 @@ async function main() {
       const pins = loadConfig().pinned ?? [];
       if (!pins.length) return console.log(dim("no pinned models — pin <model>"));
       for (const m of pins) console.log(`${bold(m)}`);
+      return;
+    }
+
+    case "args": {
+      const id = args[0] ?? die("args <harness> [-- flags | --default]");
+      if (has("default")) setHarnessFlags(id, null);
+      else if (argv.includes("--")) setHarnessFlags(id, argv.slice(argv.indexOf("--") + 1));
+      const mine = loadConfig().agentArgs?.[id];
+      const flags = mine ?? DEFAULT_ARGS[id] ?? [];
+      console.log(`${bold(id)} flags: ${bold(flags.join(" ") || "none")}${mine ? dim(" (yours)") : dim(" (default)")}`);
       return;
     }
 

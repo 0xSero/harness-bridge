@@ -69,6 +69,36 @@ const which = (bin: string): string | null => {
 
 export const harnessInstalled = (h: Harness): string | null => which(h.bin);
 
+/**
+ * Flags a harness is launched with by default. These two skip the harness's own confirmation
+ * prompts, which is convenient on a local endpoint and worth knowing about: the agent can then
+ * edit files and run commands without asking. `args <harness>` overrides them, `--safe` omits
+ * them for one launch.
+ */
+export const DEFAULT_ARGS: Record<string, string[]> = {
+  // this build of Codex has no --yolo; the long form is its documented spelling
+  codex: ["--dangerously-bypass-approvals-and-sandbox"],
+  claude: ["--dangerously-skip-permissions"],
+};
+
+/** What a harness is actually launched with: the user's choice, else the default. */
+export function harnessFlags(id: string, overrides?: Record<string, string[]>): string[] {
+  return overrides?.[id] ?? DEFAULT_ARGS[id] ?? [];
+}
+
+/** Record extra flags for a harness, or clear them with null. */
+export function withHarnessFlags(cfg: ConfigLike, id: string, flags: string[] | null): ConfigLike {
+  const next = { ...(cfg.agentArgs ?? {}) };
+  if (flags && flags.length) next[id] = flags;
+  else delete next[id];
+  return { ...cfg, agentArgs: next };
+}
+
+/** The slice of the config this module needs, so it does not depend on core's full type. */
+export interface ConfigLike {
+  agentArgs?: Record<string, string[]>;
+}
+
 // ---------------------------------------------------------------- installing
 
 export interface Installer {

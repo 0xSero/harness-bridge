@@ -34,9 +34,13 @@ const appleScript = (source: string) => ["osascript", "-e", source];
 /** an AppleScript string literal: backslashes and quotes are the only hazards */
 const asLiteral = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
-/** Warp's automation is a Launch Configuration; `exec` carries the command itself. */
-const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-const warpConfig = (name: string) => join(homedir(), ".warp", "launch_configurations", `${slug(name)}.yaml`);
+const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/, "");
+/**
+ * Warp is driven by a Tab Config, not a Launch Configuration: `warp://tab_config/<name>` opens
+ * a new tab in the window that is already focused, and only opens a window when none is open.
+ * Launch Configurations are legacy and always open a new window.
+ */
+const warpConfig = (name: string) => join(homedir(), ".warp", "tab_configs", `${slug(name)}.toml`);
 
 const warp: Terminal = {
   id: "warp",
@@ -44,16 +48,16 @@ const warp: Terminal = {
   probe: "/Applications/Warp.app",
   prepare: ({ command, dir, name }) => {
     const path = warpConfig(name);
-    mkdirSync(join(homedir(), ".warp", "launch_configurations"), { recursive: true });
-    // cwd must be absolute or Warp will not list the configuration
+    mkdirSync(join(homedir(), ".warp", "tab_configs"), { recursive: true });
+    // Warp matches the URI against the file stem, and the directory must be absolute
     writeFileSync(
       path,
-      `---\nname: ${slug(name)}\nwindows:\n  - tabs:\n      - title: ${name}\n        layout:\n          cwd: ${dir || homedir()}\n          commands:\n            - exec: ${command}\n`,
+      `name = ${JSON.stringify(name)}\ntitle = ${JSON.stringify(name)}\n\n[[panes]]\nid = "main"\ntype = "terminal"\ndirectory = ${JSON.stringify(dir || homedir())}\ncommands = [${JSON.stringify(command)}]\nis_focused = true\n`,
     );
     return [path];
   },
-  // the URI takes the configuration's name; a path there silently does nothing
-  command: (s) => ["open", `warp://launch/${slug(s.name)}`],
+  // by name: the URI is matched against the file stem, and a path is ignored
+  command: (s) => ["open", `warp://tab_config/${slug(s.name)}`],
 };
 
 const macOS: Terminal[] = [

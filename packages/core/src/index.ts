@@ -6,4 +6,5 @@
 export * from "./harnesses.ts";
 export * from "./terminals.ts";
 export * from "./core.ts";
+export * from "./models.ts";
 export * from "./snapshot.ts";
