@@ -108,7 +108,7 @@ async function main() {
 
     case "models": {
       const provider = resolveProvider(args[0]);
-      const models = await listModels(provider.id);
+      const models = await listModels(provider.id, has("fresh"));
       const sel = loadConfig().selected;
       for (const m of models) {
         const mark = sel.model === m.id && sel.provider === provider.id ? bold("→") : " ";
@@ -257,7 +257,7 @@ async function main() {
     }
 
     case "snapshot": {
-        const view = await snapshot(args[0]);
+        const view = await snapshot(args[0], has("fresh"));
         if (has("json")) return console.log(JSON.stringify(view, null, 2));
         console.log(`${bold(view.selected.model ?? "no model")} on ${bold(view.selected.provider ?? "no provider")}`);
         console.log(dim(`${view.providers.length} providers · ${view.models.length} models · reasoning ${view.providers[0]?.reasoning ?? "auto"}`));

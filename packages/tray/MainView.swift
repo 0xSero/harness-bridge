@@ -107,11 +107,19 @@ struct IconButton: View {
     }
 }
 
+func markImage() -> NSImage? {
+    // NSImage(named:) does not find a plain .png copied into Resources; ask the bundle for the file
+    if let url = Bundle.main.url(forResource: "LocalAIMark", withExtension: "png") {
+        return NSImage(contentsOf: url)
+    }
+    return nil
+}
+
 /// The Local AI mark from the bundle. A build without the asset still renders something.
 struct Mark: View {
     var size: CGFloat = 28
     var body: some View {
-        if let logo = NSImage(named: "LocalAIMark") {
+        if let logo = markImage() {
             Image(nsImage: logo).resizable().interpolation(.high)
                 .frame(width: size, height: size)
         } else {

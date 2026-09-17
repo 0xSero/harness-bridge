@@ -34,7 +34,7 @@ export interface HarnessView {
 }
 
 /** Everything a front end needs, in one read — the tray, web UI and CLI all render this. */
-export async function snapshot(providerId?: string): Promise<Snapshot> {
+export async function snapshot(providerId?: string, fresh = false): Promise<Snapshot> {
   const cfg = loadConfig();
   const active = providerId ?? cfg.selected.provider;
   const provider = cfg.providers.find((p) => p.id === active);
@@ -42,7 +42,7 @@ export async function snapshot(providerId?: string): Promise<Snapshot> {
   let error = "";
   if (active) {
     try {
-      models = await listModels(active);
+      models = await listModels(active, fresh);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }

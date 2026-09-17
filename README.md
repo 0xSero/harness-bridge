@@ -1,149 +1,152 @@
-# harness-bridge
+# Local AI
 
-**Local AI** — point any coding harness at any OpenAI-, Anthropic- or Responses-compatible
-inference endpoint. Configure a provider once, discover its live models, then open the
-harness you want on the model you picked. The menu bar app is called Local AI; the package
-and CLI are `harness-bridge`.
+Point any coding harness — Claude Code, Codex, OpenCode, Pi, OMP, Crush, Copilot, Grok —
+at any OpenAI-, Anthropic- or Responses-compatible inference endpoint. Pick a model from
+what the endpoint actually serves, click a harness, and it opens already talking to that
+model.
 
-Four independent packages, one core:
+<p align="center"><img src="docs/panel.png" width="420"></p>
 
-| Package | What it is | Largest file |
-|---|---|---|
-| `packages/core` | providers, models, launch plans, sessions | 436 |
-| `packages/cli` | terminal wrapper — the `harness-bridge` / `hbr` executables | 287 |
-| `packages/tray` | Local AI — the macOS menu bar app (SwiftUI + AppKit) | 240 |
-| `packages/web` | browser UI on `127.0.0.1` | 246 |
+Nothing you own is edited. Your `~/.claude.json`, `~/.codex/config.toml` and
+`~/.config/opencode` are untouched: the endpoint, key and model travel in the launch
+environment, and the only setting the tool persists is its own selection.
 
-The core is a library. Everything else is a thin shell over it. Each package is split into
-small modules rather than one long file: `harnesses.ts` (what each agent is), `terminals.ts`
-(how a session is opened), `core.ts` (providers and launches), `snapshot.ts` (the read model
-every UI renders).
+Four packages, one core:
 
-## Install
+| Package | What it is |
+|---|---|
+| [`packages/core`](packages/core/src) | providers, model discovery, launch plans, sessions |
+| [`packages/cli`](packages/cli/src) | the `harness-bridge` / `hbr` executables |
+| [`packages/tray`](packages/tray) | **Local AI** — the macOS menu bar app |
+| [`packages/web`](packages/web/src) | a browser UI on `127.0.0.1` |
 
-```bash
+Everything else is a thin shell over the core; each shell issues the same commands you
+would type.
+
+## Quick start
+
+Requires [Bun](https://bun.sh) ≥ 1.1; the menu bar app needs macOS with Xcode command
+line tools.
+
+```sh
 git clone https://github.com/0xSero/harness-bridge && cd harness-bridge
 bun install
-cd packages/cli && bun link        # puts `harness-bridge` and `hbr` on your PATH
+cd packages/cli && bun link      # puts `harness-bridge` and `hbr` on your PATH
 ```
 
-Requires [Bun](https://bun.sh) ≥ 1.1. The tray additionally requires Xcode command line
-tools (`swiftc`); macOS only.
-
-## Configure
-
-```bash
+```sh
+# 1. name an endpoint
 harness-bridge providers add --name HomeLab --url http://host:8080/v1 --key sk-…
+
+# 2. see what it actually serves, and pick
+harness-bridge models
+harness-bridge use deepseek-v4.1-flash
+
+# 3. open a harness on it
+harness-bridge run claude
 ```
 
-The key is written to `~/.config/harness-bridge/config.json` with mode `0600`. It is never
-passed on a command line, never logged, and never committed.
+The key is written to `~/.config/harness-bridge/config.json`, mode `0600`. It is never
+passed on a command line, never logged, and never committed. A session never contains it
+either — see [Sessions](#sessions).
 
-A provider that serves more than one dialect says so:
+### macOS menu bar
 
-```bash
-harness-bridge providers add --name Gateway --url https://gw/v1 --key sk-… --apis chat,messages,responses
+`bash packages/tray/build.sh` builds `Local AI.app` and a `Local AI.dmg`; install from the
+DMG, or:
+
+```sh
+open -a "/Applications/Local AI.app"
 ```
 
-Without `--apis`, a provider is assumed to serve only its `--api` dialect (default `chat`).
+<p align="center"><img src="docs/settings.png" width="460"></p>
 
-## Use
+The panel shows the model in use, everything pinned beside it, the folder and terminal a
+session opens in, and every installed harness. Settings holds the providers — select one
+to edit it; the key is never displayed and a blank field keeps the stored one — and the
+full model catalogue, with pin toggles.
 
-```bash
-harness-bridge models                     # live models from the selected provider
-harness-bridge use deepseek-v4.1-flash    # select one
-harness-bridge harnesses                  # what is installed, and what this endpoint can drive
-harness-bridge run deepseek-v4.1-flash claude
-```
+## Sessions are a command
 
-`run` opens the harness in a new terminal window with the endpoint, key and model in its
-environment. **If the harness is not installed, it is installed first** (`npm`/`bun`/`pipx`,
-per harness), then launched; `--no-install` refuses instead. `harness-bridge install <id>`
-installs one on its own.
-
-A few harnesses (OMP, Grok, Hermes) ship as downloaded native binaries rather than published
-packages. For those the tool prints the vendor's install hint instead of inventing a URL.
-
-| Flag | Effect |
-|---|---|
-| `--print` | print the resolved argv and environment instead of launching |
-| `--exec` | run the harness in this terminal (no new window) |
-| `--harness <id>` | pick the harness without a positional argument |
-| `--provider <id>` | launch against a provider other than the selected one |
-| `--dir <path>` | working directory for the harness (overrides `dir`) |
-| `--fresh` | ignore the cached model list and refetch |
-| `--no-install` | fail instead of installing a missing harness |
-| `-- <flags…>` | append flags to the harness argv (e.g. `-- --yolo`) |
-
-Nothing you own is edited — your `~/.claude.json`, `~/.codex/config.toml` and
-`~/.config/opencode` are untouched. The only thing that changes is this tool's own selection.
-
-Listings are coloured only when stdout is a terminal, so a pipe, a log or the macOS tray
-gets plain text; `NO_COLOR` forces plain output.
-
-## The panel
-
-The menu bar panel is one screen:
-
-- **Models** — the model in use, plus anything pinned beside it. The live model is pinned by
-  definition, so it never appears twice and cannot be unpinned. *All models…* opens the
-  catalogue.
-- **Session opens in** — the folder (click to choose another) and the terminal.
-- **Harnesses** — click to launch; a harness the endpoint cannot drive is shown but inert, so
-  the reason is visible.
-
-Settings holds two panes: **Providers** (select one to edit it — name, URL, key, dialects,
-reasoning; the key is never displayed, and leaving it blank keeps the stored one) and
-**Models** (the full catalogue, with pin toggles).
-
-The model list is cached on disk for 30s, so the panel opens instantly instead of waiting on
-the endpoint; `--fresh`, or 30 seconds, forces a refetch.
-
-## Sessions
-
-A session is a **command**, not a generated script:
+A session is not a generated script. It is one command you can read:
 
 ```
 harness-bridge run --harness omp --exec --dir /Users/you/project
 ```
 
-The terminal is handed exactly that, so what runs is visible in its own history. The command
-re-enters the CLI, which builds the launch environment at run time from the 0600 config — so
-**no key is ever written to a file**, and a session always uses your current selection rather
-than one frozen when a command was composed.
+The terminal is handed exactly that. It re-enters the CLI, which builds the launch
+environment at run time from the `0600` config — so **no key is ever written to a file**,
+and a session always reflects your current selection rather than one frozen when a
+command was composed. Delete `~/.config/harness-bridge/` and the tool leaves no trace.
 
-### Which terminal
+### Choosing the terminal
 
-```bash
-pin <model> | unpin <model> | pins      # what the panel shows
-harness-bridge terminal                 # the list, with what is installed
-harness-bridge terminal ghostty         # or: warp, terminal, iterm, kitty, wezterm, …
+```sh
+harness-bridge terminal                 # what is installed, and what is in use
+harness-bridge terminal ghostty         # warp, terminal, iterm, kitty, wezterm, …
 harness-bridge terminal custom --command 'open -a WezTerm {dir}'
 ```
 
-`auto` (the default) follows `$TERM_PROGRAM`, so launching from Warp opens in Warp, and from
-Ghostty opens in Ghostty. Each entry knows its own mechanism: Ghostty, kitty, Alacritty and
-WezTerm take a command as argv; Terminal.app and iTerm are driven by AppleScript; Warp has no
-`-e` and is opened through a Launch Configuration, which is the only thing this tool writes
-into another app's directory. `{command}`, `{dir}` and `{name}` substitute into a custom
-template.
+`auto`, the default, follows `$TERM_PROGRAM`: launch from Warp and it opens in Warp;
+from Ghostty, in Ghostty. Each terminal has its own mechanism — Ghostty, kitty, Alacritty
+and WezTerm take the command as argv; Terminal.app and iTerm are driven by AppleScript;
+Warp has no `-e`, so it is driven by a [Tab Config](https://docs.warp.dev/terminal/windows/tab-configs/)
+(`warp://tab_config/<name>`), which opens a **tab in the window that already has focus**
+and only opens a window when none is open. That file is the only thing this tool writes
+into another app's directory.
 
-### Where a session opens
+`{command}`, `{dir}` and `{name}` substitute into a custom template.
 
-```bash
-harness-bridge dir ~/code         # remembered; used when a run names no directory
-harness-bridge run --dir /tmp omp # one-off
+### Choosing the folder
+
+```sh
+harness-bridge dir ~/code          # remembered for every later session
+harness-bridge run --dir /tmp omp  # or just this one
 ```
 
-Unset, sessions open wherever the shell started. The tray has a *Choose…* folder picker and
-the web UI a text field for the same setting.
+With no `dir` set, a session opens wherever the shell started. The panel has a folder
+picker and the web UI a text field for the same setting.
+
+## Harness flags
+
+Claude Code and Codex skip their own confirmation prompts by default —
+`--dangerously-skip-permissions` and `--dangerously-bypass-approvals-and-sandbox`. That is
+convenient against a local endpoint and worth knowing about, so it is not hidden:
+
+```sh
+harness-bridge args claude                 # what it launches with
+harness-bridge args claude -- --permission-mode acceptEdits
+harness-bridge args claude --default       # back to the built-in flags
+harness-bridge run --safe claude           # omit them for this one launch
+```
+
+## Dialects
+
+A harness is only offered when the endpoint speaks its dialect. That is a correctness rule,
+not a preference: Responses-shaped traffic to a Chat endpoint fails on the first turn.
+
+| Harness | Dialect | How it reaches the endpoint |
+|---|---|---|
+| `claude` | `messages` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, `--model` |
+| `codex` | `responses` | `-c model_providers.local.*`, `-c model_provider=local`, `LOCAL_AI_KEY` |
+| `opencode` | `chat` | inline `OPENCODE_CONFIG_CONTENT` provider, key via `{env:…}` |
+| `pi`, `omp` | `chat` | a config the harness reads through its own environment variable |
+| `crush` | `chat` | plugin-owned `XDG_CONFIG_HOME` |
+| `copilot` | `chat` | `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY` |
+| `grok` | `chat` | plugin-owned `GROK_HOME/config.toml` |
+| `aider`, `hermes`, and anything else | `chat` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_MODEL` |
+
+The context window a harness is told about is the model's real one, read from the
+endpoint's `/models`, so nothing silently assumes 128k. Claude Code does not know locally
+served model names, so the bridge also sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and
+`CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT` — it then uses the real window
+instead of warning and compacting early.
 
 ## Reasoning
 
-`auto` by default, which changes nothing — the harness and the engine keep their own settings.
-Choose a level to have the bridge ask for it:
+`auto` by default: nothing is sent, and the harness and engine keep their own settings.
 
-```bash
+```sh
 harness-bridge providers reasoning high
 ```
 
@@ -154,91 +157,84 @@ harness-bridge providers reasoning high
 | Pi, OMP | the `supportsReasoningParams` compat flag is lifted, so params are sent |
 | others | no reasoning knob; the setting is ignored |
 
-## Dialects
+## Missing harnesses install themselves
 
-A harness only gets offered when the endpoint speaks its dialect. This is a correctness
-rule, not a preference: sending Responses-shaped traffic to a Chat endpoint fails at the
-first turn.
-
-| Harness | Dialect | How it is pointed at the endpoint |
-|---|---|---|
-| `claude` | `messages` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, `--model` |
-| `codex` | `responses` | `-c model_providers.local.*`, `-c model_provider=local`, `LOCAL_AI_KEY` |
-| `opencode` | `chat` | inline `OPENCODE_CONFIG_CONTENT` provider, key via `{env:…}` |
-| `pi`, `omp` | `chat` | plugin-owned `models.json`/`models.yml` + `*_CODING_AGENT_DIR` |
-| `crush` | `chat` | plugin-owned `XDG_CONFIG_HOME` |
-| `copilot` | `chat` | `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY` |
-| `grok` | `chat` | plugin-owned `GROK_HOME/config.toml` |
-| `aider`, `hermes`, and everything else | `chat` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
-
-Harnesses that cannot take a key from the environment are given a `0600` file under
-`~/.config/harness-bridge/agents/`. The context window advertised to a harness is the
-model's real one, read from the provider's `/models`, so nothing assumes 128k.
-
-Claude Code does not know locally served model names; the bridge sets
-`CLAUDE_CODE_MAX_CONTEXT_TOKENS` and `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT`
-so it uses the real window instead of warning and compacting early.
-
-## Web
-
-```bash
-bun packages/web/src/server.ts        # http://127.0.0.1:4141
+```sh
+harness-bridge run --harness crush     # not installed -> installed, then launched
+harness-bridge install crush           # or on its own
 ```
 
-Add and select providers, browse live models, and launch any installed harness. Bound to
-loopback; no authentication beyond that.
+Installs use the vendor's own package (`npm`, `bun` or `pipx`). Harnesses that ship as
+downloaded binaries — OMP, Grok, Hermes — are not guessed at: the tool prints the vendor's
+install hint instead. `--no-install` refuses to install anything.
 
-## Tray (macOS)
+## Command reference
 
-```bash
-bash packages/tray/build.sh          # builds "Local AI.app" and "Local AI.dmg"
-open "packages/tray/dist/Local AI.dmg"   # drag to Applications
-open -a "/Applications/Local AI.app"
+```
+providers                              list configured providers
+providers add --name N --url U --key K [--apis chat,messages] [--reasoning L]
+providers rm <id> | use <id> | reasoning <level> [provider] | show <id> [--json]
+models [provider] [--fresh]            live models from the endpoint
+use <model> [provider]                 select a model
+harnesses [provider]                   installed, and what the endpoint can drive
+install <harness>                      install one
+run [model] [harness]                  open a session
+     --print  --exec  --no-install  --safe  --provider <id>  --dir <path>  -- <flags…>
+pin <model> | unpin <model> | pins     what the panel shows
+dir [path]                             where sessions open
+terminal [id|auto|custom]              which terminal sessions open in
+args <harness> [-- flags | --default]  the flags a harness launches with
+snapshot [--json] | status | config    the whole state, a summary, or the file path
 ```
 
-The build renders the Local AI mark (`packages/tray/assets/logo.svg`, the same vector the
-plugin uses) into `AppIcon.icns` and the panel's header image, then packages the app with an
-`/Applications` shortcut into a compressed DMG.
+`models` and `snapshot` cache the model list on disk for 30 seconds, so a UI opens
+instantly instead of waiting on the endpoint; `--fresh` refetches now. When the endpoint
+fails, the last list is served rather than an empty one — a momentary blip should not
+blank the panel.
 
-A `⇄` item in the menu bar with Providers / Models / Harnesses submenus, an *Add provider…*
-flow, and *Open web UI*. It is an `LSUIElement` bundle, so there is no Dock icon.
+## Web UI
 
-Every action shells out to the CLI, so there is no second copy of the logic. Because a
-bundle opened from Finder inherits a minimal `PATH`, the tray resolves the CLI by absolute
-path (`$HOME/.bun/bin`, `~/.local/bin`, Homebrew, `/usr/local`) and hands the child an
-augmented `PATH` — without that, both `harness-bridge` and the `bun` its shim needs would be
-unreachable. Set `HB_BIN` to override the CLI, and `HB_DEBUG=1` to log every invocation to
-`~/.config/harness-bridge/tray.log`.
+```sh
+bun packages/web/src/server.ts     # http://127.0.0.1:4141
+```
+
+Providers, the model catalogue, and launching — the same commands as the CLI, in a
+browser. Bound to loopback with no authentication: it is for your machine, or for a
+tailnet you trust.
 
 ## Layout
 
 ```
-packages/core/src/core.ts      library: config, providers, /models, launch plans
-packages/cli/src/cli.ts        commands, terminal selection, --print/--exec
-packages/tray/main.swift       NSStatusItem app
-packages/web/src/server.ts     Bun.serve + single-page UI
+packages/core/src/core.ts        providers, sessions, launch plans
+packages/core/src/harnesses.ts   what each harness is, how it installs, its default flags
+packages/core/src/terminals.ts   how a session is opened in each terminal
+packages/core/src/models.ts      the model list and its disk cache
+packages/core/src/snapshot.ts    the read model every UI renders
+packages/cli/src/cli.ts          command wiring
+packages/tray/*.swift            the menu bar app
+packages/web/src/server.ts       Bun.serve and the single page
 ```
-
-Configuration lives only in `~/.config/harness-bridge/`. Delete that directory and the tool
-has no footprint.
 
 ## Testing
 
-```bash
+```sh
 bun test
 ```
 
-The suite covers dialect gating, argv/env construction per harness, secret handling, and
-config round-tripping.
+Unit tests cover dialect gating, the argv and environment built for each harness, secret
+handling and config round-tripping. `test/cli.test.ts` runs every verb in a throwaway
+config home — the test that catches the bugs refactors actually introduce.
 
-End-to-end checks ran against a live llama.cpp-family server on three machines, each
-returning a completion through the environment the tool generates:
+End to end, a real completion was returned through the generated launch environment on:
 
-| Machine | Architecture | Harnesses exercised |
+| Machine | Architecture | What ran |
 |---|---|---|
-| macOS | arm64 | Claude Code (`messages`), OMP (`chat`) |
+| macOS | arm64 | Claude Code (`messages`), OMP (`chat`), Warp and Terminal.app launches |
 | Pop!_OS 22.04 | x86_64 | Claude Code, OMP |
-| DGX Spark, Ubuntu 24.04 | aarch64 | OMP; and Claude Code from a clean image, which was installed by `run` before launching |
+| DGX Spark, Ubuntu 24.04 | aarch64 | OMP; and Claude Code from a clean machine, installed by `run` before launching |
+
+Headless hosts are fine for everything except opening a window: `terminal` and `snapshot`
+work, and a launch reports the missing emulator instead of failing silently.
 
 ## Licence
 
