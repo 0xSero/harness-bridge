@@ -126,7 +126,8 @@ struct Mark: View {
 
 struct PopoverView: View {
     @ObservedObject var store: Store
-    @State private var showSettings = false
+    /// Settings opens in its own window (see AppDelegate.showSettings).
+    var openSettings: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -134,13 +135,25 @@ struct PopoverView: View {
             Divider()
             ScrollView { content }
             Divider()
+            if !store.status.isEmpty { statusLine; Divider() }
             footer
         }
         // a definite height: without one the ScrollView collapses and the popover sizes to nothing
         .frame(width: 420, height: 620)
         .background(Color(nsColor: .windowBackgroundColor))
         .task { store.refresh() }
-        .sheet(isPresented: $showSettings) { SettingsView(store: store) }
+    }
+
+    /// Always in view, whether or not a snapshot ever arrived: an error the user cannot see is
+    /// a panel that looks dead.
+    private var statusLine: some View {
+        Text(store.status)
+            .font(.system(size: 10.5))
+            .foregroundStyle(store.status.contains("…") ? Color.secondary : Color.red)
+            .lineLimit(3)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Style.pad).padding(.vertical, 8)
     }
 
     private var activeProvider: Snapshot.Provider? {
@@ -181,18 +194,17 @@ struct PopoverView: View {
                 models(snap)
                 session(snap)
                 harnesses(snap)
-                if !store.status.isEmpty {
-                    Text(store.status)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(store.status.contains("…") ? Color.secondary : Color.red)
-                        .padding(.horizontal, Style.pad).padding(.top, 10)
-                }
-            } else {
+            } else if store.busy {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text("reading state…").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, Style.pad).padding(.vertical, 20)
+            } else {
+                Row(symbol: "arrow.clockwise", title: "nothing loaded", detail: "click to try again") {
+                    store.refresh()
+                }
+                .padding(.top, 14)
             }
         }
         .padding(.bottom, 14)
@@ -203,7 +215,7 @@ struct PopoverView: View {
         SectionHeader(text: "models", count: snap.pinned.count)
         if snap.pinned.isEmpty {
             Row(symbol: "circle.dashed", title: "nothing selected",
-                detail: "choose one in Settings") { showSettings = true }
+                detail: "choose one in Settings") { openSettings() }
         }
         ForEach(snap.pinned) { m in
             let live = m.id == snap.live?.id
@@ -219,7 +231,7 @@ struct PopoverView: View {
                 }
             }
         }
-        Button("All \(snap.catalog.count) models…") { showSettings = true }
+        Button("All \(snap.catalog.count) models…") { openSettings() }
             .buttonStyle(.link).font(.system(size: 11))
             .padding(.horizontal, Style.pad).padding(.top, 6)
     }
@@ -272,7 +284,7 @@ struct PopoverView: View {
         HStack(spacing: 12) {
             Text("0.1.0").font(.system(size: 10.5)).foregroundStyle(.tertiary)
             Spacer()
-            Button("Settings") { showSettings = true }.font(.system(size: 11.5))
+            Button("Settings") { openSettings() }.font(.system(size: 11.5))
             Button("Quit") { NSApplication.shared.terminate(nil) }.font(.system(size: 11.5))
         }
         .padding(.horizontal, Style.pad).padding(.vertical, 11)

@@ -4,7 +4,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var store: Store
-    @Environment(\.dismiss) private var dismiss
+    /// Closes the window this view is hosted in.
+    var close: () -> Void
 
     enum Tab: String, CaseIterable { case providers = "Providers", models = "Models" }
 
@@ -38,7 +39,7 @@ struct SettingsView: View {
                 Text("Keys are stored 0600 in ~/.config/harness-bridge/config.json.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                Button("Done") { close() }.keyboardShortcut(.defaultAction)
             }
             .padding(14)
         }

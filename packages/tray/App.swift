@@ -9,42 +9,49 @@ final class Store: ObservableObject {
     @Published var status = ""
     @Published var busy = false
 
-    /// Read the CLI. `nonisolated` so a click can call it from a background queue.
+    /// CLI calls run one at a time, in order, off the main thread. A click that lands while a
+    /// call is in flight waits its turn; it is never dropped.
+    private let cli = DispatchQueue(label: "local-ai.cli", qos: .userInitiated)
+    private var inflight = 0 { didSet { busy = inflight > 0 } }
+
+    /// Read the CLI. `nonisolated` so it can run on the CLI queue.
     nonisolated static func fetch() -> (Snapshot?, String) {
         let (code, out) = hb(["snapshot", "--json"])
-        guard code == 0, let data = out.data(using: .utf8),
-              let snap = try? JSONDecoder().decode(Snapshot.self, from: data) else {
-            return (nil, out.isEmpty ? "could not read Local AI state" : out.trimmingCharacters(in: .whitespacesAndNewlines))
+        let text = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard code == 0 else { return (nil, text.isEmpty ? "harness-bridge exited \(code)" : text) }
+        do {
+            let snap = try JSONDecoder().decode(Snapshot.self, from: Data(out.utf8))
+            return (snap, snap.error)
+        } catch let DecodingError.keyNotFound(key, _) {
+            return (nil, "could not read Local AI state: the CLI reports no \(key.stringValue)")
+        } catch {
+            return (nil, "could not read Local AI state: \(text.prefix(160))")
         }
-        return (snap, snap.error)
     }
 
-    /// Refresh in the background and publish when it lands.
+    /// Refresh in the background and publish when it lands. Skipped while anything is queued:
+    /// every job ends with its own fetch, so the state that lands last is already current.
     func refresh() {
-        guard !busy else { return }
-        busy = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (snap, status) = Store.fetch()
-            DispatchQueue.main.async {
-                if let snap { self.snap = snap }
-                self.status = status
-                self.busy = false
-            }
-        }
+        guard inflight == 0 else { return }
+        enqueue(nil)
     }
 
-    /// Run a mutating command, then refresh. Nothing here blocks the panel.
-    private func act(_ args: [String]) {
-        guard !busy else { return }
-        busy = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (code, out) = hb(args)
-            let failure = code == 0 ? "" : out.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Run a mutating command, then refresh. Queued behind whatever is in flight.
+    private func act(_ args: [String]) { enqueue(args) }
+
+    private func enqueue(_ args: [String]?) {
+        inflight += 1
+        cli.async {
+            var failure = ""
+            if let args {
+                let (code, out) = hb(args)
+                if code != 0 { failure = out.trimmingCharacters(in: .whitespacesAndNewlines) }
+            }
             let (snap, status) = Store.fetch()
             DispatchQueue.main.async {
                 if let snap { self.snap = snap }
                 self.status = failure.isEmpty ? status : failure
-                self.busy = false
+                self.inflight -= 1
             }
         }
     }
@@ -113,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = Store()
     var status: NSStatusItem!
     let popover = NSPopover()
+    var settings: NSWindow?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -125,7 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         status.button?.target = self
         status.button?.toolTip = "Local AI"
 
-        let hosting = NSHostingController(rootView: PopoverView(store: store))
+        let hosting = NSHostingController(rootView: PopoverView(store: store) { [unowned self] in showSettings() })
         // NSPopover sizes to the controller's fitting size; without this it clamps to 320x320
         // and the laid-out panel is squeezed
         hosting.view.frame = NSRect(x: 0, y: 0, width: panelSize.width, height: panelSize.height)
@@ -158,5 +166,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApplication.shared.activate(ignoringOtherApps: true)
         store.refresh()   // update in place; the panel is already up
+    }
+
+    /// Settings is a window of its own. A sheet on the popover dies with it, and the popover is
+    /// transient: the first click outside it — into the sheet included — closes both.
+    func showSettings() {
+        let window = settings ?? {
+            let w = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            w.title = "Local AI Settings"
+            w.isReleasedWhenClosed = false
+            settings = w
+            return w
+        }()
+        if !window.isVisible {   // a fresh form each time it is opened, not the last edit in progress
+            let hosting = NSHostingController(rootView: SettingsView(store: store) { [weak window] in window?.close() })
+            // as with the popover: the window takes the controller's size, and SwiftUI's fitting
+            // size is not available yet — SettingsView is fixed at 520x520
+            hosting.view.frame = NSRect(x: 0, y: 0, width: 520, height: 520)
+            hosting.preferredContentSize = NSSize(width: 520, height: 520)
+            hosting.sizingOptions = []
+            window.contentViewController = hosting
+            window.setContentSize(hosting.preferredContentSize)
+            window.center()
+        }
+        popover.performClose(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        trace("settings: visible=\(window.isVisible) frame=\(window.frame)")
     }
 }
