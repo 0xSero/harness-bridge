@@ -6,8 +6,9 @@
  * key and model travel in the launch environment, so the harness keeps its own config and
  * only the *selected model* of this tool changes.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync, chmodSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 
 export type Dialect = "chat" | "messages" | "responses";
@@ -172,21 +173,78 @@ export const HARNESSES: Harness[] = [
 export const harnessById = (id: string) => HARNESSES.find((h) => h.id === id);
 
 const which = (bin: string): string | null => {
-  for (const dir of (process.env.PATH ?? "").split(":")) {
+  // a harness installed a moment ago lands in a global bin dir that may not be on this
+  // process's PATH yet, so the well-known ones are searched too
+  const dirs = [
+    ...(process.env.PATH ?? "").split(":"),
+    join(homedir(), ".bun", "bin"),
+    join(homedir(), ".local", "bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+  ];
+  for (const dir of dirs) {
     if (!dir) continue;
     const p = join(dir, bin);
     try {
       if (statSync(p).isFile()) return p;
     } catch {}
   }
-  const local = join(homedir(), ".local", "bin", bin);
-  return existsSync(local) ? local : null;
+  return null;
 };
 
 export const harnessInstalled = (h: Harness): string | null => which(h.bin);
 
 /** which harnesses can speak to a provider serving these dialects */
 export const compatible = (dialects: Dialect[]) => HARNESSES.filter((h) => dialects.includes(h.dialect));
+
+// ---------------------------------------------------------------- installing
+
+export interface Installer {
+  /** npm and pipx packages can be installed unattended; manual means the vendor ships a binary */
+  manager: "npm" | "pip" | "manual";
+  pkg?: string;
+  hint: string;
+}
+
+/**
+ * Where each harness comes from. Only vendors' published packages are listed; harnesses that
+ * ship as downloaded binaries say so instead of guessing a URL.
+ */
+export const INSTALLERS: Record<string, Installer> = {
+  claude: { manager: "npm", pkg: "@anthropic-ai/claude-code", hint: "npm install -g @anthropic-ai/claude-code" },
+  codex: { manager: "npm", pkg: "@openai/codex", hint: "npm install -g @openai/codex" },
+  opencode: { manager: "npm", pkg: "opencode-ai", hint: "npm install -g opencode-ai" },
+  pi: { manager: "npm", pkg: "@oh-my-pi/pi-coding-agent", hint: "npm install -g @oh-my-pi/pi-coding-agent" },
+  crush: { manager: "npm", pkg: "@charmland/crush", hint: "npm install -g @charmland/crush" },
+  copilot: { manager: "npm", pkg: "@github/copilot", hint: "npm install -g @github/copilot" },
+  aider: { manager: "pip", pkg: "aider-chat", hint: "pipx install aider-chat" },
+  omp: { manager: "manual", hint: "OMP ships a native binary — install it from https://oh-my-pi.dev" },
+  grok: { manager: "manual", hint: "the Grok CLI ships a downloaded binary — install it from xAI" },
+  hermes: { manager: "manual", hint: "install Hermes from its own repository" },
+};
+
+/** Install a harness with the vendor's package, then report the binary that appeared. */
+export function installHarness(id: string): { path: string; command: string } {
+  const h = harnessById(id);
+  if (!h) throw new Error(`unknown harness: ${id}`);
+  const already = harnessInstalled(h);
+  if (already) return { path: already, command: "" };
+  const inst = INSTALLERS[id];
+  if (!inst || inst.manager === "manual") throw new Error(`${h.label} cannot be installed automatically — ${inst?.hint ?? "no installer known"}`);
+  const argv =
+    inst.manager === "pip"
+      ? ["pipx", "install", inst.pkg!]
+      : which("bun")
+        ? ["bun", "add", "-g", inst.pkg!]
+        : ["npm", "install", "-g", inst.pkg!];
+  const r = spawnSync(argv[0], argv.slice(1), { stdio: "inherit" });
+  if (r.error) throw new Error(`could not run ${argv.join(" ")}: ${r.error.message}`);
+  if (r.status !== 0)
+    throw new Error(`${inst.manager === "pip" ? "pipx" : "the package manager"} failed (${argv.join(" ")} exited ${r.status}) — nothing was installed`);
+  const after = harnessInstalled(h);
+  if (!after) throw new Error(`\`${argv.join(" ")}\` reported success but ${h.label} is not on PATH — a new shell may be needed`);
+  return { path: after, command: argv.join(" ") };
+}
 
 /** the dialects an endpoint accepts; a provider without an explicit list serves its primary one */
 export const dialectsOf = (p: Provider): Dialect[] => (p.apis?.length ? p.apis : [p.api]);
@@ -396,4 +454,26 @@ export async function run(opts: RunOptions): Promise<{ plan: LaunchPlan; script:
 
 export function dialectNote(provider: Provider): Dialect {
   return provider.api;
+}
+
+/**
+ * Write the launch script and open it in a terminal. macOS uses Terminal.app; elsewhere the
+ * first installed emulator that can run a script. Shared by the CLI and the web UI so a
+ * launch behaves identically either way.
+ */
+export function openScriptInTerminal(script: string, label: string): { opened: boolean; path: string } {
+  const dir = join(AGENT_DIR, "run");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, `${label.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}.sh`);
+  writePrivate(path, script);
+  chmodSync(path, 0o700);
+  if (process.platform === "darwin") {
+    return { opened: spawnSync("open", ["-a", "Terminal", path], { stdio: "ignore" }).status === 0, path };
+  }
+  for (const term of ["kgx", "gnome-terminal", "konsole", "kitty", "alacritty", "x-terminal-emulator", "xterm"]) {
+    if (spawnSync("bash", ["-lc", `command -v ${term}`], { stdio: "ignore" }).status !== 0) continue;
+    const r = spawnSync(term, ["-e", "bash", path], { detached: true, stdio: "ignore" });
+    if (!r.error) return { opened: true, path };
+  }
+  return { opened: false, path };
 }

@@ -53,11 +53,12 @@ harness-bridge run deepseek-v4.1-flash claude
 ```
 
 `run` opens the harness in a new terminal window with the endpoint, key and model in its
-environment. Nothing you own is edited — your `~/.claude.json`, `~/.codex/config.toml` and
-`~/.config/opencode` are untouched. The only thing that changes is this tool's own
-selection.
+environment. **If the harness is not installed, it is installed first** (`npm`/`bun`/`pipx`,
+per harness), then launched; `--no-install` refuses instead. `harness-bridge install <id>`
+installs one on its own.
 
-Useful flags:
+A few harnesses (OMP, Grok, Hermes) ship as downloaded native binaries rather than published
+packages. For those the tool prints the vendor's install hint instead of inventing a URL.
 
 | Flag | Effect |
 |---|---|
@@ -66,7 +67,11 @@ Useful flags:
 | `--harness <id>` | pick the harness without a positional argument |
 | `--provider <id>` | launch against a provider other than the selected one |
 | `--dir <path>` | working directory for the harness |
+| `--no-install` | fail instead of installing a missing harness |
 | `-- <flags…>` | append flags to the harness argv (e.g. `-- --yolo`) |
+
+Nothing you own is edited — your `~/.claude.json`, `~/.codex/config.toml` and
+`~/.config/opencode` are untouched. The only thing that changes is this tool's own selection.
 
 ## Dialects
 
@@ -132,10 +137,16 @@ bun test
 ```
 
 The suite covers dialect gating, argv/env construction per harness, secret handling, and
-config round-tripping. End-to-end checks were run against a live llama.cpp-family server on
-three machines — macOS arm64 (Claude Code and OMP), Pop!_OS x86_64 (Claude Code and OMP),
-and DGX Spark aarch64 (OMP) — each returning a completion through the generated launch
-environment.
+config round-tripping.
+
+End-to-end checks ran against a live llama.cpp-family server on three machines, each
+returning a completion through the environment the tool generates:
+
+| Machine | Architecture | Harnesses exercised |
+|---|---|---|
+| macOS | arm64 | Claude Code (`messages`), OMP (`chat`) |
+| Pop!_OS 22.04 | x86_64 | Claude Code, OMP |
+| DGX Spark, Ubuntu 24.04 | aarch64 | OMP; and Claude Code from a clean image, which was installed by `run` before launching |
 
 ## Licence
 

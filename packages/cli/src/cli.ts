@@ -5,6 +5,7 @@
  */
 import {
   AGENT_DIR,
+  openScriptInTerminal,
   CONFIG_PATH,
   HARNESSES,
   addProvider,
@@ -12,6 +13,7 @@ import {
   dialectsOf,
   harnessById,
   harnessInstalled,
+  installHarness,
   listModels,
   loadConfig,
   planToScript,
@@ -21,7 +23,6 @@ import {
   saveConfig,
   selectModel,
 } from "@harness-bridge/core";
-import { mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -65,10 +66,12 @@ const usage = `harness-bridge — launch a coding harness on any OpenAI/Anthropi
   models [provider]                  list live models from the provider
   use <model> [provider]             select the model (only selection is persisted)
   harnesses [provider]               installed harnesses and which the endpoint can drive
+  install <harness>                  install a harness (npm/pipx) so it can be launched
   run [model] [harness]              open the harness on the selected model
         --provider <id>  --dir <cwd>
         --print                      print the command instead of launching
         --exec                       run the harness in this terminal
+        --no-install                 refuse instead of installing a missing harness
         -- <extra flags…>            append flags to the harness argv
   status                             what is configured and selected
   config                             path to the config file
@@ -151,6 +154,14 @@ async function main() {
         for (const [k, v] of Object.entries(plan.env)) console.log(dim(`${k}=${secret.test(k) ? "…" : v}`));
         return;
       }
+      // a missing harness is installed, then launched — unless --no-install says otherwise
+      const target = harnessById(harnessId) ?? die(`unknown harness: ${harnessId}`);
+      if (!harnessInstalled(target)) {
+        if (has("no-install")) die(`${target.label} is not installed (run: harness-bridge install ${target.id})`);
+        console.log(`installing ${bold(target.label)}…`);
+        const { command } = installHarness(target.id);
+        console.log(dim(`installed with ${command}`));
+      }
       const res = await run({ harnessId, model, providerId: flag("provider"), cwd: flag("dir"), extraArgs: extra, ...(await modelTraits(model)) });
       if (has("exec")) {
         // run the harness here and now, with the same environment a terminal launch would get
@@ -158,7 +169,21 @@ async function main() {
         process.exit(r.status ?? 0);
       }
       console.log(`launching ${bold(res.plan.harness.label)} on ${bold(model ?? loadConfig().selected.model!)}`);
-      await openInTerminal(res.script, res.plan.harness.label);
+      const opened = openScriptInTerminal(res.script, res.plan.harness.label);
+      if (!opened.opened) console.log(dim(`no terminal emulator found; run: bash ${opened.path}`));
+      return;
+    }
+
+    case "install": {
+      const id = args[0] ?? die("install <harness>");
+      const h = harnessById(id) ?? die(`unknown harness: ${id}`);
+      const had = harnessInstalled(h);
+      if (had) {
+        console.log(`${bold(h.label)} is already installed at ${had}`);
+        return;
+      }
+      const { path, command } = installHarness(id);
+      console.log(`installed ${bold(h.label)} with ${dim(command)} → ${path}`);
       return;
     }
 
@@ -199,27 +224,6 @@ async function modelTraits(model?: string): Promise<{ context?: number; vision?:
   } catch {
     return {};
   }
-}
-
-/** macOS opens Terminal.app on the script; Linux picks an installed emulator. */
-async function openInTerminal(script: string, label: string) {
-  const dir = join(AGENT_DIR, "run");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const path = join(dir, `${label.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}.sh`);
-  writeFileSync(path, script, { mode: 0o700 });
-  chmodSync(path, 0o700);
-  if (process.platform === "darwin") {
-    spawnSync("open", ["-a", "Terminal", path], { stdio: "ignore" });
-    return;
-  }
-  for (const term of ["x-terminal-emulator", "kgx", "gnome-terminal", "konsole", "kitty", "alacritty", "xterm"]) {
-    const r = spawnSync("bash", ["-lc", `command -v ${term}`], { stdio: "ignore" });
-    if (r.status === 0) {
-      spawnSync(term, ["-e", "bash", path], { detached: true, stdio: "ignore" });
-      return;
-    }
-  }
-  console.log(dim(`no terminal emulator found; run: bash ${path}`));
 }
 
 await main();
