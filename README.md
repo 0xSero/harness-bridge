@@ -1,8 +1,9 @@
 # harness-bridge
 
-Point any coding harness at any OpenAI-, Anthropic- or Responses-compatible inference
-endpoint. Configure a provider once, discover its live models, then open the harness you
-want on the model you picked.
+**Local AI** — point any coding harness at any OpenAI-, Anthropic- or Responses-compatible
+inference endpoint. Configure a provider once, discover its live models, then open the
+harness you want on the model you picked. The menu bar app is called Local AI; the package
+and CLI are `harness-bridge`.
 
 Four independent packages, one core:
 
@@ -10,7 +11,7 @@ Four independent packages, one core:
 |---|---|---|
 | `packages/core` | providers, models, launch plans, sessions | 436 |
 | `packages/cli` | terminal wrapper — the `harness-bridge` / `hbr` executables | 287 |
-| `packages/tray` | macOS menu bar app (SwiftUI + AppKit) | 240 |
+| `packages/tray` | Local AI — the macOS menu bar app (SwiftUI + AppKit) | 240 |
 | `packages/web` | browser UI on `127.0.0.1` | 246 |
 
 The core is a library. Everything else is a thin shell over it. Each package is split into
@@ -70,6 +71,7 @@ packages. For those the tool prints the vendor's install hint instead of inventi
 | `--harness <id>` | pick the harness without a positional argument |
 | `--provider <id>` | launch against a provider other than the selected one |
 | `--dir <path>` | working directory for the harness (overrides `dir`) |
+| `--fresh` | ignore the cached model list and refetch |
 | `--no-install` | fail instead of installing a missing harness |
 | `-- <flags…>` | append flags to the harness argv (e.g. `-- --yolo`) |
 
@@ -78,6 +80,24 @@ Nothing you own is edited — your `~/.claude.json`, `~/.codex/config.toml` and
 
 Listings are coloured only when stdout is a terminal, so a pipe, a log or the macOS tray
 gets plain text; `NO_COLOR` forces plain output.
+
+## The panel
+
+The menu bar panel is one screen:
+
+- **Models** — the model in use, plus anything pinned beside it. The live model is pinned by
+  definition, so it never appears twice and cannot be unpinned. *All models…* opens the
+  catalogue.
+- **Session opens in** — the folder (click to choose another) and the terminal.
+- **Harnesses** — click to launch; a harness the endpoint cannot drive is shown but inert, so
+  the reason is visible.
+
+Settings holds two panes: **Providers** (select one to edit it — name, URL, key, dialects,
+reasoning; the key is never displayed, and leaving it blank keeps the stored one) and
+**Models** (the full catalogue, with pin toggles).
+
+The model list is cached on disk for 30s, so the panel opens instantly instead of waiting on
+the endpoint; `--fresh`, or 30 seconds, forces a refetch.
 
 ## Sessions
 
@@ -95,6 +115,7 @@ than one frozen when a command was composed.
 ### Which terminal
 
 ```bash
+pin <model> | unpin <model> | pins      # what the panel shows
 harness-bridge terminal                 # the list, with what is installed
 harness-bridge terminal ghostty         # or: warp, terminal, iterm, kitty, wezterm, …
 harness-bridge terminal custom --command 'open -a WezTerm {dir}'

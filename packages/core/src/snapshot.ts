@@ -22,6 +22,12 @@ export interface Snapshot {
   providers: { id: string; name: string; apiUrl: string; apis: Dialect[]; reasoning: ReasoningLevel; selected: boolean }[];
   selected: { provider: string | null; model: string | null };
   models: ModelInfo[];
+  /** the model in use, with its metadata, or null when nothing is selected */
+  live: ModelInfo | null;
+  /** the models the panel shows: the live one first, then whatever else was pinned */
+  pinned: ModelInfo[];
+  /** every model the provider offers, for the settings list */
+  catalog: ModelInfo[];
   harnesses: HarnessView[];
   terminal: { active: string; configured: string; options: { id: string; label: string; installed: boolean }[] };
   sessionDir: string;
@@ -61,6 +67,12 @@ export async function snapshot(providerId?: string): Promise<Snapshot> {
     })),
     selected: cfg.selected,
     models,
+    live: models.find((m) => m.id === cfg.selected.model && active === cfg.selected.provider) ?? null,
+    // the model in use is pinned by definition, so it is never listed twice and cannot be unpinned
+    pinned: [...new Set([cfg.selected.model, ...(cfg.pinned ?? [])])]
+      .filter((id): id is string => !!id)
+      .map((id) => models.find((m) => m.id === id) ?? { id, name: id }),
+    catalog: models,
     harnesses: HARNESSES.map((h) => {
       const inst = INSTALLERS[h.id];
       return {

@@ -7,7 +7,7 @@ import {
   CONFIG_PATH, HARNESSES, REASONING_LEVELS, TERMINALS,
   addProvider, buildLaunch, dialectsOf, harnessById, harnessInstalled, installHarness,
   listModels, loadConfig, openSession, removeProvider, resolveProvider, resolveTerminal,
-  run, saveConfig, selectModel, sessionDir, setCwd, setTerminal, snapshot, terminalInstalled,
+  pinModel, run, saveConfig, selectModel, sessionDir, setCwd, setTerminal, snapshot, terminalInstalled,
 } from "@harness-bridge/core";
 import type { ReasoningLevel } from "@harness-bridge/core";
 import { join } from "node:path";
@@ -57,12 +57,14 @@ const usage = `harness-bridge — launch a coding harness on any OpenAI/Anthropi
 
   providers | providers add --name N --url U --key K [--apis chat,messages] [--reasoning <level>]
   providers rm <id> | providers use <id> | providers reasoning <level> [provider]
+  providers show <id> [--json]       one provider's settings (never the key)
   models [provider]                  list live models
   use <model> [provider]             select a model (only the selection is persisted)
   harnesses [provider]               what is installed, and what this endpoint can drive
   install <harness>                  install a harness so it can be launched
   run [model] [harness]              open a session; --print | --exec | --no-install
                                      --provider <id> | --dir <path> | -- <harness flags>
+  pin|unpin <model> | pins           keep models in the main view
   dir [path]                         where sessions open (default: this shell's directory)
   terminal [id|auto|custom] --command "<t>"   which terminal sessions open in
   snapshot [--json] | status         the whole state, or the one-line summary
@@ -96,6 +98,12 @@ async function main() {
         const level = parseReasoning(args[1]);
         addProvider({ ...p, reasoning: level });
         console.log(`${bold(p.id)} reasoning: ${bold(level)}`);
+        return;
+      }
+      if (args[0] === "show") {
+        const p = resolveProvider(args[1]);
+        if (has("json")) return console.log(JSON.stringify({ ...p, apiKey: undefined, hasKey: !!p.apiKey }, null, 2));
+        console.log(`${bold(p.id)}\n  ${p.apiUrl}\n  ${dialectsOf(p).join(", ")} · reasoning ${p.reasoning ?? "auto"}`);
         return;
       }
       if (args[0] === "use") {
@@ -203,10 +211,24 @@ async function main() {
 
     case "status": {
       const cfg = loadConfig();
-      console.log(`${bold("config")}    ${CONFIG_PATH}`);
-      console.log(`${bold("agents")}    ${AGENT_DIR}`);
+      console.log(`${bold("config")}  ${CONFIG_PATH}`);
       console.log(`${bold("providers")} ${cfg.providers.length}`);
       console.log(`${bold("selected")}  ${cfg.selected.model ?? dim("none")} ${cfg.selected.provider ? dim("on " + cfg.selected.provider) : ""}`);
+      return;
+    }
+
+    case "pin":
+    case "unpin": {
+      const model = args[0] ?? die("pin <model> | unpin <model>");
+      pinModel(model, cmd === "pin");
+      console.log(`${cmd === "pin" ? "pinned" : "unpinned"} ${bold(model)}`);
+      return;
+    }
+
+    case "pins": {
+      const pins = loadConfig().pinned ?? [];
+      if (!pins.length) return console.log(dim("no pinned models — pin <model>"));
+      for (const m of pins) console.log(`${bold(m)}`);
       return;
     }
 

@@ -25,6 +25,15 @@ let HB_ENV: [String: String] = {
     return env
 }()
 
+/// HARNESS_BRIDGE_DEBUG=1 appends app events to /tmp/local-ai-tray.log.
+func trace(_ line: String) {
+    guard ProcessInfo.processInfo.environment["HARNESS_BRIDGE_DEBUG"] == "1" else { return }
+    let entry = Data((ISO8601DateFormatter().string(from: Date()) + " " + line + "\n").utf8)
+    let url = URL(fileURLWithPath: "/tmp/local-ai-tray.log")
+    if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(entry); try? h.close() }
+    else { try? entry.write(to: url) }
+}
+
 func hbProcess(_ args: [String]) -> Process {
     let p = Process()
     if HB.contains("/") {
@@ -72,8 +81,14 @@ struct Snapshot: Decodable {
         let selected: Bool
     }
     struct Selected: Decodable { let provider: String?; let model: String? }
-    struct Model: Decodable, Identifiable {
+    struct Model: Decodable, Identifiable, Equatable {
         let id: String; let name: String?; let contextWindow: Int?; let vision: Bool?
+        var detail: String {
+            var parts: [String] = []
+            if let ctx = contextWindow { parts.append("\(ctx / 1024)k context") }
+            if vision == true { parts.append("vision") }
+            return parts.joined(separator: " · ")
+        }
     }
     struct Harness: Decodable, Identifiable {
         let id, label, dialect, hint: String
@@ -88,11 +103,22 @@ struct Snapshot: Decodable {
     let providers: [Provider]
     let selected: Selected
     let models: [Model]
+    let live: Model?
+    let pinned: [Model]
+    let catalog: [Model]
     let harnesses: [Harness]
     let terminal: TerminalView
     let sessionDir: String
     let defaultDir: String
     let error: String
+}
+
+/// `providers show --json`: everything about a provider except its key.
+struct ProviderDetail: Decodable {
+    let id, name, apiUrl, api: String
+    let apis: [String]
+    let reasoning: String
+    let hasKey: Bool
 }
 
 let LEVELS = ["auto", "off", "low", "medium", "high"]

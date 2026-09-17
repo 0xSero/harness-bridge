@@ -39,6 +39,8 @@ export interface Config {
   terminalCommand?: string;
   /** where sessions open when no directory is given for the run */
   cwd?: string;
+  /** models kept in the main view, in the order they were pinned */
+  pinned?: string[];
 }
 
 export interface ModelInfo {
@@ -53,6 +55,16 @@ export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 export const AGENT_DIR = join(CONFIG_DIR, "agents");
 
 const empty = (): Config => ({ providers: [], selected: { provider: null, model: null } });
+
+/** Keep a model in the main view, or drop it. Pinning the same model twice is a no-op. */
+export function pinModel(model: string, on = true): Config {
+  const cfg = loadConfig();
+  if (!on && cfg.selected.model === model) throw new Error(`${model} is the model in use; select another before unpinning it`);
+  const pinned = cfg.pinned ?? [];
+  cfg.pinned = on ? (pinned.includes(model) ? pinned : [...pinned, model]) : pinned.filter((m) => m !== model);
+  saveConfig(cfg);
+  return cfg;
+}
 
 /** Record where sessions open. An empty path clears it and falls back to the shell's directory. */
 export function setCwd(dir: string): Config {
@@ -88,6 +100,7 @@ export function loadConfig(): Config {
       terminal: raw.terminal,
       terminalCommand: raw.terminalCommand,
       cwd: raw.cwd,
+      pinned: raw.pinned ?? [],
     };
   } catch {
     return empty();
@@ -108,10 +121,14 @@ export const apiBases = (base: string) => {
 
 // ---------------------------------------------------------------- providers
 
-export function addProvider(p: Partial<Provider> & { id?: string; name?: string; apiUrl: string; apiKey: string }): Provider {
+export function addProvider(p: Partial<Provider> & { id?: string; name?: string; apiUrl: string; apiKey?: string }): Provider {
   const cfg = loadConfig();
   const id = (p.id || p.name || "provider").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  const prov: Provider = { id, name: p.name || id, apiUrl: p.apiUrl, apiKey: p.apiKey, api: p.api ?? "chat", apis: p.apis, reasoning: p.reasoning };
+  const existing = cfg.providers.find((x) => x.id === id);
+  // editing without retyping the key keeps the stored one
+  const apiKey = p.apiKey || existing?.apiKey || "";
+  if (!apiKey) throw new Error(`provider ${id} needs an api key`);
+  const prov: Provider = { id, name: p.name || id, apiUrl: p.apiUrl, apiKey, api: p.api ?? "chat", apis: p.apis ?? existing?.apis, reasoning: p.reasoning ?? existing?.reasoning };
   const i = cfg.providers.findIndex((x) => x.id === id);
   if (i >= 0) cfg.providers[i] = prov;
   else cfg.providers.push(prov);
@@ -147,8 +164,22 @@ export function selectModel(model: string, providerId?: string): Config {
 
 // ---------------------------------------------------------------- models
 
-export async function listModels(providerId?: string): Promise<ModelInfo[]> {
+/**
+ * Model lists change rarely but every refresh wants one, and each CLI invocation is a fresh
+ * process — so the cache is on disk, which is what makes the menu bar panel open instantly.
+ */
+const MODEL_TTL_MS = 30_000;
+const cachePath = (id: string) => join(CONFIG_DIR, "cache", `models-${id}.json`);
+
+export async function listModels(providerId?: string, fresh = false): Promise<ModelInfo[]> {
   const p = resolveProvider(providerId);
+  if (!fresh) {
+    try {
+      const c = JSON.parse(readFileSync(cachePath(p.id), "utf8")) as { at: number; apiUrl: string; models: ModelInfo[] };
+      // a changed endpoint invalidates the cache, even inside the window
+      if (Date.now() - c.at < MODEL_TTL_MS && c.apiUrl === p.apiUrl) return c.models;
+    } catch {}
+  }
   const res = await fetch(`${apiBases(p.apiUrl).v1}/models`, {
     headers: { Authorization: `Bearer ${p.apiKey}` },
     signal: AbortSignal.timeout(15000),
@@ -179,6 +210,8 @@ export async function listModels(providerId?: string): Promise<ModelInfo[]> {
       vision: "vision" in row && typeof row.vision === "boolean" ? row.vision : modalities.includes("image"),
     });
   }
+  mkdirSync(dirname(cachePath(p.id)), { recursive: true, mode: 0o700 });
+  writeFileSync(cachePath(p.id), JSON.stringify({ at: Date.now(), apiUrl: p.apiUrl, models: out }), { mode: 0o600 });
   return out;
 }
 
