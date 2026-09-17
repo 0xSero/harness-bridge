@@ -19,33 +19,24 @@ let HB: String = {
     return "harness-bridge" // last resort: let env search PATH
 }()
 
-let HB_DEBUG = ProcessInfo.processInfo.environment["HB_DEBUG"] == "1"
-
 /// The environment a GUI-launched app must hand to the CLI: its own PATH cannot find `bun`
 /// (the installed CLI is a `#!/usr/bin/env bun` shim) or the global bin directories.
 let HB_ENV: [String: String] = {
     var env = ProcessInfo.processInfo.environment
     let home = NSHomeDirectory()
-    let dirs = [
-        (HB as NSString).deletingLastPathComponent,
-        "\(home)/.bun/bin",
-        "\(home)/.local/bin",
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-    ].filter { !$0.isEmpty && FileManager.default.fileExists(atPath: $0) }
+    let dirs = [(HB as NSString).deletingLastPathComponent, "\(home)/.bun/bin", "\(home)/.local/bin",
+                "/opt/homebrew/bin", "/usr/local/bin"].filter { FileManager.default.fileExists(atPath: $0) }
     env["PATH"] = (dirs + [env["PATH"] ?? "/usr/bin:/bin"]).joined(separator: ":")
     return env
 }()
 
+/// HB_DEBUG=1 appends every CLI invocation to ~/.config/harness-bridge/tray.log.
 func trace(_ line: String) {
-    guard HB_DEBUG else { return }
+    guard ProcessInfo.processInfo.environment["HB_DEBUG"] == "1" else { return }
     let path = NSHomeDirectory() + "/.config/harness-bridge/tray.log"
-    let stamped = ISO8601DateFormatter().string(from: Date()) + " " + line + "\n"
-    guard let data = stamped.data(using: .utf8) else { return }
+    let data = Data((ISO8601DateFormatter().string(from: Date()) + " " + line + "\n").utf8)
     if let handle = FileHandle(forWritingAtPath: path) {
-        handle.seekToEndOfFile()
-        handle.write(data)
-        try? handle.close()
+        handle.seekToEndOfFile(); handle.write(data); try? handle.close()
     } else {
         try? data.write(to: URL(fileURLWithPath: path))
     }
@@ -60,11 +51,8 @@ func portOpen(_ port: UInt16) -> Bool {
     addr.sin_family = sa_family_t(AF_INET)
     addr.sin_port = port.bigEndian
     addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-    let r = withUnsafePointer(to: &addr) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            connect(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-        }
-    }
+    let r = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        connect(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
     return r == 0
 }
 
@@ -100,24 +88,15 @@ func hb(_ args: [String]) -> (Int32, String) {
 }
 
 /// A CLI listing line, without its escape codes or its marker column.
-struct Row {
-    let id: String
-    let selected: Bool
-    let detail: String
-}
+struct Row { let id: String; let selected: Bool; let detail: String }
 
 /// Escape sequences never belong in a menu title. The CLI omits them when stdout is not a
-/// terminal, but a menu must not depend on that being honoured.
+/// terminal, but the menu must not depend on that being honoured.
+let ansiPattern = try? NSRegularExpression(pattern: "\u{1B}\\[[0-9;]*m")
+
 func stripANSI(_ s: String) -> String {
-    guard s.contains("\u{1B}") else { return s }
-    var out = ""
-    var inEscape = false
-    for ch in s {
-        if ch == "\u{1B}" { inEscape = true; continue }
-        if inEscape { if ch == "m" { inEscape = false }; continue }
-        out.append(ch)
-    }
-    return out
+    guard let ansiPattern else { return s }
+    return ansiPattern.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "")
 }
 
 /// `models` prints "→ id  512k", `providers` "* id  url  chat", `harnesses` "● id  label  dialect".
@@ -127,11 +106,9 @@ func rows(_ output: String) -> [Row] {
         guard !s.isEmpty, !s.contains(" models from ") else { return nil }
         let selected = s.hasPrefix("→") || s.hasPrefix("*")
         var body = Substring(s).drop { "→*●○ ".contains($0) || $0 == " " }
-        var detail = ""
-        if let cut = body.range(of: "  ") {
-            detail = String(body[cut.upperBound...]).trimmingCharacters(in: .whitespaces)
-            body = body[..<cut.lowerBound]
-        }
+        let cut = body.range(of: "  ")
+        let detail = cut.map { String(body[$0.upperBound...]).trimmingCharacters(in: .whitespaces) } ?? ""
+        if let cut { body = body[..<cut.lowerBound] }
         let id = body.trimmingCharacters(in: .whitespaces)
         return id.isEmpty ? nil : Row(id: id, selected: selected, detail: detail)
     }
@@ -152,32 +129,28 @@ final class Tray: NSObject, NSApplicationDelegate {
 
         // header: the selection at a glance, not a copy of the CLI's status dump
         let cfg = loadConfigSummary()
-        let header = NSMenuItem(title: cfg.model ?? "no model selected", action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
-        if let provider = cfg.provider {
-            let sub = NSMenuItem(title: "on \(provider)", action: nil, keyEquivalent: "")
-            sub.isEnabled = false
-            menu.addItem(sub)
+        for title in [cfg.model ?? "no model selected", cfg.provider.map { "on \($0)" }].compactMap({ $0 }) {
+            let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            entry.isEnabled = false
+            menu.addItem(entry)
         }
         menu.addItem(.separator())
 
         let providers = rows(hb(["providers"]).1)
         addSubmenu("Providers", providers) { row in
             // the endpoint URL is too long for a menu; the id is what identifies it
-            MenuItem(row: row, action: #selector(self.selectProvider(_:)), target: self, detail: "")
+            self.menuItem(row, #selector(self.selectProvider(_:)), detail: "")
         }
         let models = rows(hb(["models"]).1)
         addSubmenu("Models", models) { row in
-            MenuItem(row: row, action: #selector(self.selectModel(_:)), target: self, enabled: row.selected ? false : nil)
+            self.menuItem(row, #selector(self.selectModel(_:)), enabled: row.selected ? false : nil)
         }
         let harnesses = rows(hb(["harnesses"]).1)
         addSubmenu("Harnesses", harnesses) { row in
             // a harness the endpoint cannot drive stays visible but inert, so the reason is readable
-            let refused = row.detail.contains("not served")
-            return MenuItem(row: row, action: #selector(self.launchHarness(_:)), target: self,
-                            title: self.harnessLabel(row), detail: self.harnessDialect(row),
-                            enabled: refused ? false : nil)
+            let (label, dialect) = self.harnessText(row)
+            return self.menuItem(row, #selector(self.launchHarness(_:)), title: label, detail: dialect,
+                                 enabled: row.detail.contains("not served") ? false : nil)
         }
 
         menu.addItem(.separator())
@@ -186,44 +159,31 @@ final class Tray: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(item("Quit", #selector(NSApplication.terminate(_:)), "q"))
         status.menu = menu
-        if HB_DEBUG {
-            for entry in menu.items {
-                trace("menu: \(entry.isEnabled ? "" : "(disabled) ")\(entry.title)")
-                for sub in entry.submenu?.items ?? [] {
-                    trace("menu:   \(sub.isEnabled ? "" : "(disabled) ")\(sub.state == .on ? "✓ " : "")\(sub.title)")
-                }
-            }
-        }
     }
 
     /// The menu bar needs the selection, not the whole snapshot.
+    /// "selected  <model>  on <provider>" / "selected  none"
     func loadConfigSummary() -> (model: String?, provider: String?) {
-        let out = hb(["status"]).1
-        for line in out.split(separator: "\n") where line.hasPrefix("selected") {
+        for line in hb(["status"]).1.split(separator: "\n") where line.hasPrefix("selected") {
             let parts = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
-            // "selected  <model>  on <provider>" / "selected  none"
             guard parts.count >= 2 else { break }
             let model = String(parts[1])
             let provider = parts.count >= 4 ? String(parts[3]) : ""
-            return (model.isEmpty || model == "none" ? nil : model, provider.isEmpty ? nil : provider)
+            return (model == "none" ? nil : model, provider.isEmpty ? nil : provider)
         }
         return (nil, nil)
     }
 
-    /// A menu item carrying a row's identity, with a checkmark for the current selection.
-    struct MenuItem {
-        init(row: Row, action: Selector, target: AnyObject, title: String? = nil, detail: String? = nil, enabled: Bool? = nil) {
-            // the menu has one line per item, so a detail is set off with a dash rather than
-            // dropped: "deepseek-v4.1-flash — 512k"
-            let name = title ?? row.id
-            let note = (detail ?? row.detail).trimmingCharacters(in: .whitespaces)
-            item = NSMenuItem(title: note.isEmpty ? name : "\(name) — \(note)", action: action, keyEquivalent: "")
-            item.target = target
-            item.representedObject = row.id
-            item.state = row.selected ? .on : .off
-            if let enabled { item.isEnabled = enabled }
-        }
-        let item: NSMenuItem
+    /// One line per row, with a checkmark for the current selection instead of a '*' in the title.
+    func menuItem(_ row: Row, _ action: Selector, title: String? = nil, detail: String? = nil, enabled: Bool? = nil) -> NSMenuItem {
+        let name = title ?? row.id
+        let note = (detail ?? row.detail).trimmingCharacters(in: .whitespaces)
+        let item = NSMenuItem(title: note.isEmpty ? name : "\(name) — \(note)", action: action, keyEquivalent: "")
+        item.target = self
+        item.representedObject = row.id
+        item.state = row.selected ? .on : .off
+        if let enabled { item.isEnabled = enabled }
+        return item
     }
 
     func item(_ title: String, _ action: Selector, _ key: String) -> NSMenuItem {
@@ -233,20 +193,15 @@ final class Tray: NSObject, NSApplicationDelegate {
     }
 
     /// Harness rows read "id  Label  dialect"; the menu shows the label and the dialect.
-    func harnessLabel(_ row: Row) -> String {
+    func harnessText(_ row: Row) -> (String, String) {
         let parts = row.detail.components(separatedBy: "  ").filter { !$0.isEmpty }
         let label = parts.first?.trimmingCharacters(in: .whitespaces) ?? row.id
-        return label.isEmpty ? row.id : label
-    }
-
-    func harnessDialect(_ row: Row) -> String {
-        let parts = row.detail.components(separatedBy: "  ").filter { !$0.isEmpty }
-        guard parts.count >= 2 else { return "" }
+        guard parts.count >= 2 else { return (label, "") }
         let dialect = parts[1].trimmingCharacters(in: .whitespaces)
-        return row.detail.contains("not served") ? "\(dialect) · not served" : dialect
+        return (label, row.detail.contains("not served") ? "\(dialect) · not served" : dialect)
     }
 
-    func addSubmenu(_ title: String, _ rows: [Row], _ make: (Row) -> MenuItem) {
+    func addSubmenu(_ title: String, _ rows: [Row], _ make: (Row) -> NSMenuItem) {
         let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let sub = NSMenu()
         if rows.isEmpty {
@@ -254,7 +209,7 @@ final class Tray: NSObject, NSApplicationDelegate {
             none.isEnabled = false
             sub.addItem(none)
         }
-        for row in rows { sub.addItem(make(row).item) }
+        for row in rows { sub.addItem(make(row)) }
         parent.submenu = sub
         menu.addItem(parent)
     }
@@ -299,21 +254,16 @@ final class Tray: NSObject, NSApplicationDelegate {
             // the browser is only useful once the server is listening
             var ready = false
             for _ in 0..<40 where !ready {
-                if portOpen(port) { ready = true; break }
-                Thread.sleep(forTimeInterval: 0.25)
+                if portOpen(port) { ready = true } else { Thread.sleep(forTimeInterval: 0.25) }
             }
-            if !ready {
-                alert("Web UI did not start", "\(HB) serve did not listen on 127.0.0.1:\(port)")
-                return
-            }
+            if !ready { return alert("Web UI did not start", "\(HB) serve did not listen on 127.0.0.1:\(port)") }
         }
         NSWorkspace.shared.open(URL(string: "http://127.0.0.1:\(port)")!)
     }
 
     func alert(_ title: String, _ body: String) {
         let a = NSAlert()
-        a.messageText = title
-        a.informativeText = body
+        a.messageText = title; a.informativeText = body
         a.runModal()
     }
 }
@@ -325,8 +275,7 @@ extension NSAlert {
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
         field.placeholderString = placeholder
         a.accessoryView = field
-        a.addButton(withTitle: "OK")
-        a.addButton(withTitle: "Cancel")
+        a.addButton(withTitle: "OK"); a.addButton(withTitle: "Cancel")
         return a.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
     }
     static func pick(_ title: String, _ options: [String]) -> String {
