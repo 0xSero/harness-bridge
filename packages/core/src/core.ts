@@ -18,6 +18,7 @@ import {
 } from "./harnesses.ts";
 import type { Dialect, ReasoningLevel } from "./harnesses.ts";
 import { TERMINALS, resolveTerminal, terminalInstalled } from "./terminals.ts";
+import { listModels } from "./models.ts";
 
 export interface Provider {
   id: string;

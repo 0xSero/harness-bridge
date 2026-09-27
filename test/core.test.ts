@@ -80,3 +80,32 @@ test("omp suppresses reasoning params unless a level is asked for", () => {
   expect(flagOf("auto")).toBe(false);
   expect(flagOf("medium")).toBe(true);
 });
+
+
+test("dialect scanning discovers a model when none is selected", async () => {
+  const requests: { path: string; model: string }[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      const path = new URL(req.url).pathname;
+      if (path === "/v1/models") return Response.json({ data: [{ id: "discovered-model" }] });
+      const body = await req.json() as { model: string };
+      requests.push({ path, model: body.model });
+      return new Response(null, { status: path === "/v1/chat/completions" ? 200 : 404 });
+    },
+  });
+  try {
+    core.addProvider({ id: "scan-discovery", apiUrl: server.url.href, apiKey: "test-key" });
+    const result = await core.scanDialects("scan-discovery");
+    expect(requests).toEqual([
+      { path: "/v1/chat/completions", model: "discovered-model" },
+      { path: "/v1/messages", model: "discovered-model" },
+      { path: "/v1/responses", model: "discovered-model" },
+    ]);
+    expect(result.probes.map((p) => p.ok)).toEqual([true, false, false]);
+    expect(core.resolveProvider("scan-discovery").apis).toEqual(["chat"]);
+  } finally {
+    server.stop(true);
+  }
+});
